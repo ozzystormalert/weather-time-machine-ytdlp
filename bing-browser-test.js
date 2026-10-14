@@ -3,14 +3,16 @@
 
 const { chromium } = require("playwright");
 
-const QUERY = process.env.WEATHER_QUERY ||
+const QUERY =
+  process.env.WEATHER_QUERY ||
   "blizzard 1978 illinois news";
 
 const MIN_VIEWS = 1000;
-
 const SEARCH_URL =
   "https://www.bing.com/videos/search?q=" +
   encodeURIComponent(QUERY);
+
+const ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
 function parseViews(value) {
   const match = String(value || "").match(
@@ -20,69 +22,100 @@ function parseViews(value) {
   if (!match) return null;
 
   const number = Number(match[1].replace(/,/g, ""));
-
-  if (!Number.isFinite(number)) return null;
-
-  const multiplier = {
+  const scale = {
     K: 1000,
     M: 1000000,
     B: 1000000000
   };
 
-  return Math.round(
-    number *
-    (multiplier[(match[2] || "").toUpperCase()] || 1)
-  );
+  return Number.isFinite(number)
+    ? Math.round(
+        number *
+        (scale[(match[2] || "").toUpperCase()] || 1)
+      )
+    : null;
 }
 
-function normalizeUrl(raw) {
+function decodeText(value) {
+  let text = String(value || "");
+
+  for (let i = 0; i < 4; i++) {
+    const previous = text;
+
+    text = text
+      .replace(/&quot;|&#34;/gi, '"')
+      .replace(/&amp;|&#38;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/\\u0026/gi, "&")
+      .replace(/\\u003d/gi, "=")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\\//g, "/")
+      .replace(/%3A/gi, ":")
+      .replace(/%2F/gi, "/")
+      .replace(/%3F/gi, "?")
+      .replace(/%3D/gi, "=")
+      .replace(/%26/gi, "&");
+
+    if (text === previous) break;
+  }
+
+  return text;
+}
+
+function extractYouTubeId(raw) {
   if (!raw) return "";
 
+  const text = decodeText(raw);
+
+  const patterns = [
+    /(?:youtube\.com\/watch\?[^"'\s<>]*?\bv=)([A-Za-z0-9_-]{11})/i,
+    /(?:youtu\.be\/)([A-Za-z0-9_-]{11})/i,
+    /(?:youtube\.com\/(?:embed|shorts|live)\/)([A-Za-z0-9_-]{11})/i,
+    /(?:youtube\.com%2Fwatch%3Fv%3D)([A-Za-z0-9_-]{11})/i,
+    /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([A-Za-z0-9_-]{11})["']/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && ID_PATTERN.test(match[1])) {
+      return match[1];
+    }
+  }
+
   try {
-    const url = new URL(raw);
+    const url = new URL(text);
 
-    url.hash = "";
-
-    if (url.hostname.includes("youtube.com")) {
+    if (
+      url.hostname === "youtube.com" ||
+      url.hostname.endsWith(".youtube.com")
+    ) {
       const id = url.searchParams.get("v");
-
-      if (id) {
-        return "https://www.youtube.com/watch?v=" + id;
-      }
+      if (id && ID_PATTERN.test(id)) return id;
     }
 
-    if (url.hostname.includes("youtu.be")) {
+    if (
+      url.hostname === "youtu.be" ||
+      url.hostname === "www.youtu.be"
+    ) {
       const id = url.pathname.split("/").filter(Boolean)[0];
-
-      if (id) {
-        return "https://www.youtube.com/watch?v=" + id;
-      }
+      if (id && ID_PATTERN.test(id)) return id;
     }
-
-    return url.toString();
   } catch {
-    return "";
-  }
-}
-
-function videoIdentity(video) {
-  if (video.videoId) {
-    return "video:" + video.videoId;
+    // Metadata may not be a standalone URL.
   }
 
-  return "url:" + normalizeUrl(video.url);
+  return "";
 }
 
-async function extractVideos(page) {
+function youtubeUrl(id) {
+  return "https://www.youtube.com/watch?v=" + id;
+}
+
+async function extractCards(page) {
   return page.evaluate(() => {
     const VIEW_PATTERN =
       /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
-
-    const VIDEO_LINK_PATTERN =
-      /youtube\.com|youtu\.be|bing\.com\/videos/i;
-
-    const cards = [];
-    const seen = new Set();
 
     const labels = [...document.querySelectorAll("*")]
       .filter(element => {
@@ -91,162 +124,99 @@ async function extractVideos(page) {
         if (!VIEW_PATTERN.test(text)) return false;
         if (text.length > 100) return false;
 
-        return ![...element.children].some(child => {
-          const childText = (child.innerText || "").trim();
-
-          return VIEW_PATTERN.test(childText);
-        });
+        return ![...element.children].some(child =>
+          VIEW_PATTERN.test((child.innerText || "").trim())
+        );
       });
 
-    function getLink(node) {
-      if (!node) return null;
+    const cards = [];
 
-      if (node.matches?.("a[href]")) return node;
+    for (const label of labels) {
+      let node = label;
+      let card = null;
 
-      const links = [...node.querySelectorAll("a[href]")];
+      for (let depth = 0; depth < 12 && node; depth++) {
+        const text = (node.innerText || "").trim();
 
-      return links.find(link =>
-        VIDEO_LINK_PATTERN.test(link.href)
-      ) || links[0] || null;
-    }
+        if (text.length > 15000) break;
 
-    function getMetadata(node) {
-      const candidates = [
-        node,
-        node?.parentElement,
-        node?.parentElement?.parentElement
-      ].filter(Boolean);
+        const html = node.outerHTML || "";
 
-      for (const candidate of candidates) {
+        const hasMetadata =
+          /mmeta|vrhdata|mediaUrl|contentUrl|youtube\.com|youtu\.be|riverview/i
+            .test(html);
+
+        const hasTitle =
+          !!node.querySelector(
+            ".mc_vtvc_title, [class*='title'], a[title]"
+          );
+
+        if (hasMetadata && hasTitle) {
+          card = node;
+          break;
+        }
+
+        node = node.parentElement;
+      }
+
+      if (!card) {
+        node = label.parentElement;
+
+        for (let depth = 0; depth < 8 && node; depth++) {
+          if (
+            node.querySelector("a[href]") &&
+            (node.innerText || "").length < 12000
+          ) {
+            card = node;
+            break;
+          }
+          node = node.parentElement;
+        }
+      }
+
+      const links = card
+        ? [...card.querySelectorAll("a[href]")]
+        : [];
+
+      const titleElement = card?.querySelector(
+        ".mc_vtvc_title, [class*='title']"
+      );
+
+      const title =
+        titleElement?.getAttribute("title") ||
+        titleElement?.innerText ||
+        links[0]?.getAttribute("title") ||
+        links[0]?.innerText ||
+        "";
+
+      const metadata = [];
+
+      if (card) {
         const elements = [
-          candidate,
-          ...candidate.querySelectorAll("*")
+          card,
+          ...card.querySelectorAll("*")
         ];
 
         for (const element of elements) {
-          const attributes = [
-            "mmeta",
-            "data-mmeta",
-            "data-videoid",
-            "data-id",
-            "data-url",
-            "data-href",
-            "href"
-          ];
-
-          for (const name of attributes) {
-            const value = element.getAttribute?.(name);
-
-            if (!value) continue;
+          for (const attribute of element.attributes || []) {
+            const name = attribute.name.toLowerCase();
 
             if (
-              name === "data-videoid" ||
-              name === "data-id"
+              /mmeta|vrhdata|video|media|url|href|data-id/.test(name)
             ) {
-              return {
-                videoId: value,
-                metadata: value
-              };
-            }
-
-            if (
-              VIDEO_LINK_PATTERN.test(value) ||
-              value.includes("mediaUrl") ||
-              value.includes("contentUrl")
-            ) {
-              return {
-                videoId: "",
-                metadata: value.slice(0, 3000)
-              };
+              metadata.push(attribute.value);
             }
           }
         }
       }
 
-      return {
-        videoId: "",
-        metadata: ""
-      };
-    }
-
-    for (const label of labels) {
-      const viewText = (label.innerText || "").trim();
-
-      let current = label;
-      let selected = null;
-      let selectedLink = null;
-
-      for (let depth = 0; depth < 10 && current; depth++) {
-        const text = (current.innerText || "").trim();
-
-        if (text.length > 12000) break;
-
-        const link = getLink(current);
-
-        if (link) {
-          selected = current;
-          selectedLink = link;
-          break;
-        }
-
-        current = current.parentElement;
-      }
-
-      const metadata = getMetadata(selected || label);
-
-      const cardText = (
-        selected?.innerText ||
-        label.parentElement?.innerText ||
-        viewText
-      ).trim();
-
-      const title = (
-        selectedLink?.getAttribute("title") ||
-        selectedLink?.innerText ||
-        cardText.split("\n").find(line =>
-          line.trim() &&
-          !VIEW_PATTERN.test(line)
-        ) ||
-        ""
-      ).trim().slice(0, 200);
-
-      let linkUrl = selectedLink?.href || "";
-
-      if (!linkUrl && metadata.metadata) {
-        const match = metadata.metadata.match(
-          /https?:\/\/[^\s"'<>\\]+/i
-        );
-
-        if (match) {
-          linkUrl = match[0]
-            .replace(/\\u0026/g, "&")
-            .replace(/&amp;/g, "&");
-        }
-      }
-
-      const record = {
-        label: viewText,
-        title,
-        url: linkUrl,
-        videoId: metadata.videoId,
-        metadata: metadata.metadata.slice(0, 500),
-        cardText: cardText.slice(0, 600),
-        html: (
-          selected?.outerHTML ||
-          label.parentElement?.outerHTML ||
-          label.outerHTML
-        ).slice(0, 2500)
-      };
-
-      const key =
-        record.videoId ||
-        record.url ||
-        record.label + "|" + cards.length;
-
-      if (!seen.has(key)) {
-        seen.add(key);
-        cards.push(record);
-      }
+      cards.push({
+        label: (label.innerText || "").trim(),
+        title: title.trim().slice(0, 250),
+        links: links.map(link => link.href).slice(0, 20),
+        metadata: metadata.slice(0, 100),
+        html: (card?.outerHTML || "").slice(0, 30000)
+      });
     }
 
     return {
@@ -256,6 +226,40 @@ async function extractVideos(page) {
   });
 }
 
+function resolveVideo(card) {
+  const candidates = [
+    ...card.metadata,
+    ...card.links
+  ];
+
+  // Prefer a YouTube ID explicitly present in the
+  // video's own metadata or link.
+  for (const candidate of candidates) {
+    const id = extractYouTubeId(candidate);
+
+    if (id) {
+      return {
+        videoId: id,
+        url: youtubeUrl(id),
+        source: "metadata-or-link"
+      };
+    }
+  }
+
+  // A card may contain a YouTube URL only in its HTML.
+  const id = extractYouTubeId(card.html);
+
+  if (id) {
+    return {
+      videoId: id,
+      url: youtubeUrl(id),
+      source: "card-html"
+    };
+  }
+
+  return null;
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true
@@ -263,19 +267,15 @@ async function extractVideos(page) {
 
   try {
     const page = await browser.newPage({
-      viewport: {
-        width: 1440,
-        height: 900
-      },
+      viewport: { width: 1440, height: 900 },
       locale: "en-US"
     });
 
-    console.log("====================================");
+    console.log("==================================");
     console.log("WEATHER TIME MACHINE - ENGINE 3");
-    console.log("BING VIDEO AUDIT");
-    console.log("====================================");
-
-    console.log("SEARCH QUERY:", QUERY);
+    console.log("BING VERIFIED VIDEO ID TEST");
+    console.log("==================================");
+    console.log("QUERY:", QUERY);
     console.log("MINIMUM VIEWS:", MIN_VIEWS);
     console.log("SEARCH URL:", SEARCH_URL);
 
@@ -289,7 +289,60 @@ async function extractVideos(page) {
     console.log("HTTP STATUS:", response?.status());
     console.log("PAGE TITLE:", await page.title());
 
-    const extracted = await extractVideos(page);
+    if (!response || response.status() !== 200) {
+      throw new Error("Bing search did not return HTTP 200.");
+    }
+
+    const extracted = await extractCards(page);
+
+    const unique = new Map();
+    const unresolved = [];
+
+    for (const card of extracted.cards) {
+      const views = parseViews(card.label);
+
+      if (views === null) continue;
+
+      const identity = resolveVideo(card);
+
+      if (!identity) {
+        unresolved.push({
+          title: card.title,
+          label: card.label,
+          views,
+          sampleLink: card.links[0] || ""
+        });
+        continue;
+      }
+
+      const video = {
+        title: card.title,
+        videoId: identity.videoId,
+        url: identity.url,
+        views,
+        label: card.label,
+        source: identity.source
+      };
+
+      const previous = unique.get(video.videoId);
+
+      if (!previous || video.views > previous.views) {
+        unique.set(video.videoId, video);
+      }
+    }
+
+    const videos = [...unique.values()];
+    const qualifying = videos.filter(
+      video => video.views >= MIN_VIEWS
+    );
+
+    const unresolvedQualifying = unresolved.filter(
+      item => item.views >= MIN_VIEWS
+    );
+
+    console.log("==================================");
+    console.log("VERIFICATION RESULTS");
+    console.log("==================================");
 
     console.log(
       "VIEW LABELS FOUND:",
@@ -297,134 +350,70 @@ async function extractVideos(page) {
     );
 
     console.log(
-      "CANDIDATE VIDEO RECORDS:",
+      "VIDEO CANDIDATES:",
       extracted.cards.length
     );
 
-    const unique = new Map();
-    const unlinked = [];
-
-    for (const record of extracted.cards) {
-      const views = parseViews(record.label);
-
-      if (views === null) continue;
-
-      const url = normalizeUrl(record.url);
-
-      if (!url && !record.videoId) {
-        unlinked.push({
-          label: record.label,
-          title: record.title,
-          cardText: record.cardText
-        });
-
-        continue;
-      }
-
-      const video = {
-        title: record.title,
-        url,
-        videoId: record.videoId,
-        views,
-        label: record.label
-      };
-
-      const key = videoIdentity(video);
-
-      if (!unique.has(key)) {
-        unique.set(key, video);
-      } else {
-        const existing = unique.get(key);
-
-        if (views > existing.views) {
-          unique.set(key, video);
-        }
-      }
-    }
-
-    const videos = [...unique.values()];
-
-    const qualifying = videos.filter(
-      video => video.views >= MIN_VIEWS
-    );
-
-    console.log("====================================");
-    console.log("EXTRACTION RESULTS");
-    console.log("====================================");
-
     console.log(
-      "UNIQUE LINKED VIDEOS:",
+      "UNIQUE VERIFIED YOUTUBE IDS:",
       videos.length
     );
 
     console.log(
-      "VIDEOS WITH 1000+ VIEWS:",
+      "VERIFIED VIDEOS WITH 1000+ VIEWS:",
       qualifying.length
     );
 
     console.log(
-      "UNLINKED VIEW LABELS:",
-      unlinked.length
+      "UNRESOLVED VIDEO LABELS:",
+      unresolved.length
     );
 
     console.log(
-      "QUALIFYING VIDEOS:",
+      "UNRESOLVED LABELS WITH 1000+ VIEWS:",
+      unresolvedQualifying.length
+    );
+
+    console.log(
+      "QUALIFYING VERIFIED VIDEOS:",
       JSON.stringify(qualifying, null, 2)
     );
 
     console.log(
-      "UNLINKED LABELS:",
-      JSON.stringify(unlinked.slice(0, 20), null, 2)
+      "UNRESOLVED VIDEOS:",
+      JSON.stringify(unresolved.slice(0, 20), null, 2)
     );
 
-    console.log("====================================");
-    console.log("HTML DIAGNOSTICS");
-    console.log("====================================");
-
-    for (let i = 0; i < Math.min(3, extracted.cards.length); i++) {
-      const record = extracted.cards[i];
-
-      console.log("CARD NUMBER:", i + 1);
-      console.log("VIEW LABEL:", record.label);
-      console.log("TITLE:", record.title);
-      console.log("URL:", record.url);
-      console.log("METADATA:", record.metadata);
-      console.log("HTML:", record.html);
-    }
-
-    console.log("====================================");
+    console.log("==================================");
     console.log("FINAL STATUS");
-    console.log("====================================");
+    console.log("==================================");
 
     if (extracted.labelCount === 0) {
       console.log(
-        "INCONCLUSIVE: Bing returned no view-count labels."
+        "INCONCLUSIVE: No Bing view labels found."
       );
       process.exitCode = 1;
     } else if (videos.length === 0) {
       console.log(
-        "PARTIAL SUCCESS: View counts found, but video identities could not be verified."
-      );
-      console.log(
-        "Review HTML DIAGNOSTICS to locate Bing's video metadata."
+        "INCONCLUSIVE: No YouTube IDs verified."
       );
       process.exitCode = 1;
-    } else if (unlinked.length > 0) {
+    } else if (unresolvedQualifying.length > 0) {
       console.log(
-        "PARTIAL SUCCESS: Some view labels remain unlinked."
+        "PARTIAL: Some qualifying labels lack verified IDs."
       );
       console.log(
-        "Counts are preliminary; do not assign final grades."
+        "Do not enable final grading yet."
       );
+      process.exitCode = 1;
     } else {
       console.log(
-        "EXTRACTION COMPLETED: All detected view labels are linked."
+        "TEST PASSED: All qualifying labels have verified YouTube IDs."
       );
       console.log(
-        "Review qualifying video URLs before enabling grading."
+        "Review URLs and counts before enabling grading."
       );
     }
-
   } finally {
     await browser.close();
   }
