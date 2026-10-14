@@ -1,0 +1,38 @@
+
+name: Engine 3 - YouTube Verification Test 25
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_ids:
+        description: "YouTube video IDs from Test 24E (comma separated)"
+        required: true
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run YouTube Verification Test 25
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          VIDEO_IDS: ${{ inputs.video_ids }}
+          WEATHER_QUERY: "hurricane sandy 2012 new jersey news"
+        run: node youtube-verify-test25.js
+
+      - name: Save verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-test25-results
+          path: engine3-test25-results.json
+          if-no-files-found: warn
