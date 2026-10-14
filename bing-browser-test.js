@@ -2,8 +2,7 @@
 const { chromium } = require("playwright");
 
 const query = "blizzard 1978 illinois news";
-const url =
-  "https://www.bing.com/videos/search?q=" +
+const url = "https://www.bing.com/videos/search?q=" +
   encodeURIComponent(query);
 
 function parseViews(text) {
@@ -12,22 +11,20 @@ function parseViews(text) {
   );
   if (!match) return null;
 
-  const value = Number(match[1].replace(/,/g, ""));
-  const multiplier = {
+  const number = Number(match[1].replace(/,/g, ""));
+  const multipliers = {
     K: 1000,
     M: 1000000,
     B: 1000000000
   };
 
   return Math.round(
-    value * (multiplier[(match[2] || "").toUpperCase()] || 1)
+    number * (multipliers[(match[2] || "").toUpperCase()] || 1)
   );
 }
 
 (async () => {
-  const browser = await chromium.launch({
-    headless: true
-  });
+  const browser = await chromium.launch({ headless: true });
 
   try {
     const page = await browser.newPage({
@@ -35,7 +32,7 @@ function parseViews(text) {
       locale: "en-US"
     });
 
-    console.log("ENGINE 3 - BING VIDEO COUNT TEST");
+    console.log("ENGINE 3 - BING VIDEO EXTRACTION");
     console.log("QUERY:", query);
 
     const response = await page.goto(url, {
@@ -43,54 +40,76 @@ function parseViews(text) {
       timeout: 45000
     });
 
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
 
     console.log("HTTP STATUS:", response?.status());
     console.log("PAGE TITLE:", await page.title());
 
-    const results = await page.evaluate(() => {
-      const selectors = [
-        ".mc_vtvc",
-        ".mc_vtvc_con",
-        ".vrhdata",
-        ".videoItem",
-        ".video-item",
-        "[data-videoid]"
-      ];
+    const data = await page.evaluate(() => {
+      const pattern = /[\d,.]+\s*[KMB]?\s*views?\b/i;
 
-      const nodes = [
-        ...new Set(
-          selectors.flatMap(selector =>
-            [...document.querySelectorAll(selector)]
-          )
-        )
-      ];
+      const matches = [...document.querySelectorAll("*")]
+        .filter(el => {
+          const text = (el.innerText || "").trim();
+          if (!pattern.test(text)) return false;
 
-      return nodes.map(node => {
-        const text = (node.innerText || "").trim();
-        const anchors = [...node.querySelectorAll("a[href]")];
+          return ![...el.children].some(child =>
+            pattern.test((child.innerText || "").trim())
+          );
+        });
 
-        const link = anchors.find(a =>
-          /youtube\.com|youtu\.be|bing\.com\/videos/i.test(
-            a.href
-          )
-        ) || anchors[0];
+      const results = matches.map(el => {
+        let node = el;
+        let anchor = null;
+
+        for (let depth = 0; depth < 7 && node; depth++) {
+          if (node.matches?.("a[href]")) {
+            anchor = node;
+            break;
+          }
+
+          const links = [...node.querySelectorAll("a[href]")];
+
+          if (links.length > 0) {
+            anchor = links.find(a =>
+              /youtube|youtu\.be|bing\.com\/videos/i.test(a.href)
+            ) || links[0];
+            break;
+          }
+
+          node = node.parentElement;
+        }
 
         return {
-          title: (link?.innerText || text.split("\n")[0] || "")
-            .trim()
-            .slice(0, 180),
-          url: link?.href || "",
-          text: text.slice(0, 1200)
+          label: (el.innerText || "").trim(),
+          title: (
+            anchor?.innerText ||
+            anchor?.getAttribute("title") ||
+            ""
+          ).trim().slice(0, 180),
+          url: anchor?.href || "",
+          html: el.outerHTML.slice(0, 500)
         };
-      }).filter(item => item.url && /\bviews?\b/i.test(item.text));
+      });
+
+      return {
+        totalLabels: matches.length,
+        results
+      };
     });
+
+    console.log("VIEW LABELS FOUND:", data.totalLabels);
 
     const unique = new Map();
 
-    for (const result of results) {
-      const views = parseViews(result.text);
+    for (const result of data.results) {
+      const views = parseViews(result.label);
       if (views === null) continue;
+
+      if (!result.url) {
+        console.log("UNLINKED LABEL:", result.label);
+        continue;
+      }
 
       const key = result.url.split("#")[0];
 
@@ -104,27 +123,30 @@ function parseViews(text) {
     }
 
     const videos = [...unique.values()];
-    const qualified = videos.filter(video => video.views >= 1000);
+    const qualified = videos.filter(v => v.views >= 1000);
 
-    console.log("RESULT CONTAINERS FOUND:", results.length);
-    console.log("UNIQUE VIDEOS WITH VIEW COUNTS:", videos.length);
+    console.log("LINKED UNIQUE RESULTS:", videos.length);
     console.log("VIDEOS WITH 1000+ VIEWS:", qualified.length);
-
     console.log(
       "QUALIFYING VIDEOS:",
       JSON.stringify(qualified, null, 2)
     );
 
-    if (videos.length === 0) {
-      console.log(
-        "INCONCLUSIVE: No video-linked view counts were extracted."
-      );
+    console.log(
+      "ALL VIEW LABELS:",
+      JSON.stringify(data.results.map(r => ({
+        label: r.label,
+        url: r.url
+      })), null, 2)
+    );
+
+    if (data.totalLabels === 0) {
+      console.log("INCONCLUSIVE: No view labels found.");
       process.exitCode = 1;
     } else {
-      console.log(
-        "EXTRACTION TEST COMPLETED. Review links and counts."
-      );
+      console.log("DIAGNOSTIC EXTRACTION COMPLETED.");
     }
+
   } finally {
     await browser.close();
   }
