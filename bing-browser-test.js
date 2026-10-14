@@ -3,8 +3,9 @@
 
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #24B
-// Candidate recovery only. No A-F grades generated.
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #24C
+// YOUTUBE-ONLY CANDIDATE RECOVERY
+// Diagnostic only: no A-F grades, no Blogger changes.
 
 const BASE_QUERY =
   process.env.WEATHER_QUERY ||
@@ -14,27 +15,28 @@ const MIN_VIEWS = 1000;
 const ROOT = BASE_QUERY.replace(/\s+news\s*$/i, "").trim();
 
 const SEARCHES = [...new Set([
-  BASE_QUERY,
-  ROOT + " footage",
-  ROOT + " youtube",
-  ROOT + " local news"
+  ROOT + " news site:youtube.com",
+  ROOT + " footage site:youtube.com",
+  ROOT + " youtube site:youtube.com",
+  ROOT + " local news site:youtube.com"
 ])];
 
 function parseViews(text) {
   const m = String(text || "").match(
     /(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
   );
+
   if (!m) return null;
 
-  const number = Number(m[1].replace(/,/g, ""));
-  const multiplier = {
+  const n = Number(m[1].replace(/,/g, ""));
+  const factor = {
     K: 1000,
     M: 1000000,
     B: 1000000000
   }[(m[2] || "").toUpperCase()] || 1;
 
-  return Number.isFinite(number)
-    ? Math.round(number * multiplier)
+  return Number.isFinite(n)
+    ? Math.round(n * factor)
     : null;
 }
 
@@ -42,11 +44,11 @@ function decode(raw) {
   let text = String(raw || "");
 
   for (let i = 0; i < 4; i++) {
-    const previous = text;
+    const old = text;
 
     text = text
-      .replace(/&quot;|&#34;/gi, '"')
       .replace(/&amp;|&#38;/gi, "&")
+      .replace(/&quot;|&#34;/gi, '"')
       .replace(/&#39;|&apos;/gi, "'")
       .replace(/\\u0026/gi, "&")
       .replace(/\\u003d/gi, "=")
@@ -57,7 +59,7 @@ function decode(raw) {
       text = decodeURIComponent(text);
     } catch (_) {}
 
-    if (text === previous) break;
+    if (old === text) break;
   }
 
   return text;
@@ -68,16 +70,16 @@ function youtubeIds(raw) {
   const ids = new Set();
 
   const patterns = [
-    /youtube\.com\/watch\?v=([\w-]{11})/gi,
-    /youtube\.com\/watch\?[^\s"'<>]*?[?&]v=([\w-]{11})/gi,
-    /youtu\.be\/([\w-]{11})/gi,
-    /youtube(?:-nocookie)?\.com\/(?:embed|shorts|live)\/([\w-]{11})/gi,
+    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?[?&]v=([\w-]{11})(?![\w-])/gi,
+    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?v=([\w-]{11})(?![\w-])/gi,
+    /youtu\.be\/([\w-]{11})(?![\w-])/gi,
+    /youtube(?:-nocookie)?\.com\/(?:shorts|embed|live)\/([\w-]{11})(?![\w-])/gi,
     /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([\w-]{11})["']/gi
   ];
 
   for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) {
-      ids.add(match[1]);
+    for (const m of text.matchAll(pattern)) {
+      ids.add(m[1]);
     }
   }
 
@@ -93,7 +95,7 @@ function relevance(title) {
     /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(t);
 
   const weather =
-    /\b(hurricane|storm|surge|flooding|flood|evacuation|landfall|weather)\b/.test(t);
+    /\b(hurricane|storm|surge|flood|flooding|evacuation|landfall)\b/.test(t);
 
   return {
     event,
@@ -106,61 +108,64 @@ function relevance(title) {
 
 async function extract(page) {
   return page.evaluate(() => {
-    const cards = [
+    const nodes = [
       ...document.querySelectorAll(".mc_vtvc.b_canvas")
     ];
 
     const viewRegex =
       /\d[\d,.]*\s*[KMB]?\s*views?\b/i;
 
-    return cards.map((card, index) => {
-      const titleElements = [
-        ...card.querySelectorAll(
-          ".mc_vtvc_title, a[title], [class*='title']"
-        )
-      ];
+    return nodes.map((node, index) => {
+      const titleElement = node.querySelector(
+        ".mc_vtvc_title, a[title], [class*='title']"
+      );
 
-      const titles = [...new Set(
-        titleElements.map(el =>
-          (
-            el.getAttribute("title") ||
-            el.innerText ||
-            el.textContent ||
-            ""
-          ).trim()
-        ).filter(Boolean)
-      )];
+      const title = (
+        titleElement?.getAttribute("title") ||
+        titleElement?.innerText ||
+        node.getAttribute("aria-label") ||
+        ""
+      ).trim();
 
-      const text = (card.innerText || "").trim();
+      const text = (node.innerText || "").trim();
 
       const labels = [
-        ...card.querySelectorAll("*")
+        ...node.querySelectorAll("*")
       ].filter(el => {
-        const value = (el.innerText || "").trim();
+        const ownText = (el.innerText || "").trim();
 
-        return viewRegex.test(value) &&
+        return viewRegex.test(ownText) &&
           ![...el.children].some(child =>
-            viewRegex.test(
-              (child.innerText || "").trim()
-            )
+            viewRegex.test((child.innerText || "").trim())
           );
       }).map(el =>
         (el.innerText || "").match(viewRegex)?.[0]
       ).filter(Boolean);
 
+      const links = [
+        ...node.querySelectorAll("a[href]")
+      ].map(a => ({
+        href: a.getAttribute("href") || "",
+        text: (a.innerText || "").slice(0, 120)
+      }));
+
+      const metadata = [
+        ...node.querySelectorAll("[mmeta], [data-mmeta]")
+      ].map(el => ({
+        mmeta: el.getAttribute("mmeta") || "",
+        dataMmeta: el.getAttribute("data-mmeta") || ""
+      }));
+
       const attributes = [];
 
       for (const element of [
-        card,
-        ...card.querySelectorAll(
-          "[mmeta], [vrhdata], [ourl], [href], [data-mmeta]"
+        node,
+        ...node.querySelectorAll(
+          "[ourl], [vrhdata], [href], [mmeta]"
         )
       ]) {
         for (const attr of element.attributes || []) {
-          if (
-            /mmeta|vrhdata|ourl|href|video|media|url|data-id/i
-              .test(attr.name)
-          ) {
+          if (/ourl|vrhdata|href|mmeta|url/i.test(attr.name)) {
             attributes.push({
               name: attr.name,
               value: attr.value.slice(0, 5000)
@@ -171,100 +176,93 @@ async function extract(page) {
 
       return {
         index,
-        title: (
-          titles[0] ||
-          card.getAttribute("aria-label") ||
-          ""
-        ).slice(0, 250),
-        alternateTitles: titles.slice(1, 4),
+        title: title.slice(0, 250),
         viewLabel:
           labels[0] ||
           text.match(viewRegex)?.[0] ||
           "",
-        textSample: text.slice(0, 400),
-        attributes: attributes.slice(0, 60),
-        links: [
-          ...card.querySelectorAll("a[href]")
-        ].map(a => a.href).slice(0, 12),
-        htmlSample: card.outerHTML.slice(0, 18000)
+        textSample: text.slice(0, 350),
+        links: links.slice(0, 20),
+        metadata: metadata.slice(0, 10),
+        attributes: attributes.slice(0, 50)
       };
     });
   });
 }
 
 function identify(card) {
-  const sources = [
-    ...card.attributes.map(a => ({
-      source: a.name,
-      value: a.value
-    })),
-    ...card.links.map(url => ({
-      source: "link",
-      value: url
-    })),
-    {
-      source: "html",
-      value: card.htmlSample
-    }
-  ];
-
-  const evidence = sources.map(item => ({
-    source: item.source,
-    ids: youtubeIds(item.value)
-  })).filter(item => item.ids.length > 0);
-
-  const ids = [...new Set(
-    evidence.flatMap(item => item.ids)
-  )];
-
-  const primarySources = sources.filter(item =>
-    /^(mmeta|data-mmeta|ourl|href|vrhdata)$/i
-      .test(item.source)
+  const directLinks = card.links.flatMap(link =>
+    youtubeIds(link.href)
   );
 
-  const primaryIds = [...new Set(
-    primarySources.flatMap(item =>
-      youtubeIds(item.value)
-    )
-  )];
+  const metaValues = card.metadata.flatMap(item => [
+    item.mmeta,
+    item.dataMmeta
+  ]);
+
+  const metaIds = metaValues.flatMap(youtubeIds);
+
+  const attributeIds = card.attributes.flatMap(item =>
+    youtubeIds(item.value)
+  );
+
+  const allIds = [...new Set([
+    ...directLinks,
+    ...metaIds,
+    ...attributeIds
+  ])];
+
+  const directUnique = [...new Set(directLinks)];
+  const metaUnique = [...new Set(metaIds)];
 
   let id = null;
+  let evidence = "NONE";
 
-  if (primaryIds.length === 1) {
-    id = primaryIds[0];
+  if (directUnique.length === 1) {
+    id = directUnique[0];
+    evidence = "DIRECT_YOUTUBE_LINK";
   } else if (
-    primaryIds.length === 0 &&
-    ids.length === 1
+    directUnique.length === 0 &&
+    metaUnique.length === 1
   ) {
-    id = ids[0];
+    id = metaUnique[0];
+    evidence = "BING_METADATA";
+  } else if (
+    directUnique.length === 0 &&
+    metaUnique.length === 0 &&
+    allIds.length === 1
+  ) {
+    id = allIds[0];
+    evidence = "CARD_ATTRIBUTE";
+  }
+
+  const ambiguous =
+    directUnique.length > 1 ||
+    (directUnique.length === 0 && metaUnique.length > 1);
+
+  if (ambiguous) {
+    id = null;
+    evidence = "AMBIGUOUS";
   }
 
   return {
     id,
-    possibleIds: ids,
-    idStatus: id
-      ? ids.length > 1
-        ? "PRIMARY_ID_OTHER_IDS_PRESENT"
-        : "SINGLE_ID"
-      : ids.length > 1
-        ? "AMBIGUOUS_IDS"
-        : "MISSING_YOUTUBE_ID",
-    evidenceSources: evidence
-      .map(item => item.source)
-      .slice(0, 12)
+    evidence,
+    possibleIds: allIds,
+    ambiguous,
+    youtubeUrl: id
+      ? "https://www.youtube.com/watch?v=" + id
+      : null
   };
 }
 
-function diagnose(card, search) {
+function inspect(card, searchNumber) {
   const identity = identify(card);
   const views = parseViews(card.viewLabel);
   const match = relevance(card.title);
-
   const reasons = [];
 
-  if (!card.title) {
-    reasons.push("MISSING_TITLE");
-  }
+  if (!card.title) reasons.push("MISSING_TITLE");
 
   if (views === null) {
     reasons.push("MISSING_VIEW_COUNT");
@@ -272,49 +270,42 @@ function diagnose(card, search) {
     reasons.push("BELOW_1000_VIEWS");
   }
 
+  if (!identity.id) {
+    reasons.push(
+      identity.ambiguous
+        ? "AMBIGUOUS_YOUTUBE_IDS"
+        : "NO_YOUTUBE_VIDEO_ID"
+    );
+  }
+
   if (!match.broad) {
-    reasons.push("TITLE_NOT_BROAD_WEATHER_MATCH");
+    reasons.push("TITLE_NOT_WEATHER_MATCH");
   }
 
   if (!match.strict) {
-    reasons.push("TITLE_NOT_STRICT_EVENT_PLACE_MATCH");
+    reasons.push("NOT_STRICT_EVENT_PLACE_MATCH");
   }
 
-  if (!identity.id) {
-    reasons.push(identity.idStatus);
-  }
-
-  if (
-    identity.idStatus ===
-    "PRIMARY_ID_OTHER_IDS_PRESENT"
-  ) {
-    reasons.push("MULTIPLE_IDS_REQUIRE_REVIEW");
-  }
-
+  // The grading decision remains disabled.
+  // Broad relevance is recorded for diagnostic comparison.
   const candidate =
+    identity.id !== null &&
     views !== null &&
     views >= MIN_VIEWS &&
-    match.broad &&
-    Boolean(identity.id);
+    match.broad;
 
   return {
-    search,
+    search: searchNumber,
     index: card.index,
     title: card.title,
-    alternateTitles: card.alternateTitles,
     viewLabel: card.viewLabel,
-    views,
+    reportedViews: views,
     ...identity,
     relevance: match,
     candidate,
-    reasons: reasons.length
-      ? reasons
-      : ["CANDIDATE_NOT_INDEPENDENTLY_VERIFIED"],
-    youtubeUrl: identity.id
-      ? "https://www.youtube.com/watch?v=" +
-        identity.id
-      : null,
-    textSample: card.textSample
+    reasons,
+    textSample: card.textSample,
+    linkSamples: card.links.slice(0, 5)
   };
 }
 
@@ -336,26 +327,22 @@ function diagnose(card, search) {
     let successfulSearches = 0;
 
     console.log(
-      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24B"
+      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24C"
     );
-    console.log("CANDIDATE RECOVERY DIAGNOSTIC");
-    console.log("QUERY:", BASE_QUERY);
+    console.log("YOUTUBE-ONLY CANDIDATE RECOVERY");
+    console.log("BASE QUERY:", BASE_QUERY);
     console.log("MINIMUM VIEWS:", MIN_VIEWS);
 
     for (let i = 0; i < SEARCHES.length; i++) {
       const query = SEARCHES[i];
-
       const url =
         "https://www.bing.com/videos/search?q=" +
         encodeURIComponent(query);
 
       console.log(
-        "\nSEARCH",
-        i + 1,
-        "OF",
-        SEARCHES.length,
-        query
+        "\nSEARCH", i + 1, "OF", SEARCHES.length
       );
+      console.log("QUERY:", query);
 
       try {
         const response = await page.goto(url, {
@@ -378,13 +365,10 @@ function diagnose(card, search) {
 
         const cards = await extract(page);
 
-        console.log(
-          "BING CARDS EXTRACTED:",
-          cards.length
-        );
+        console.log("BING CARDS:", cards.length);
 
         for (const card of cards) {
-          all.push(diagnose(card, i + 1));
+          all.push(inspect(card, i + 1));
         }
       } catch (error) {
         console.log(
@@ -394,40 +378,58 @@ function diagnose(card, search) {
       }
     }
 
-    const withViews = all.filter(row =>
-      row.views !== null
+    const withViews = all.filter(r =>
+      r.reportedViews !== null
     );
 
-    const qualifying = withViews.filter(row =>
-      row.views >= MIN_VIEWS
+    const qualifying = withViews.filter(r =>
+      r.reportedViews >= MIN_VIEWS
     );
 
-    const broad = qualifying.filter(row =>
-      row.relevance.broad
+    const youtubeCandidates = qualifying.filter(r =>
+      r.id !== null
     );
 
-    const candidates = broad.filter(row =>
-      row.id
+    const relevant = youtubeCandidates.filter(r =>
+      r.relevance.broad
     );
 
     const unique = new Map();
 
-    for (const row of candidates) {
+    for (const row of relevant) {
       if (!unique.has(row.id)) {
-        unique.set(row.id, row);
+        unique.set(row.id, {
+          id: row.id,
+          title: row.title,
+          reportedViews: row.reportedViews,
+          youtubeUrl: row.youtubeUrl,
+          evidence: row.evidence,
+          searches: [row.search]
+        });
+      } else {
+        const existing = unique.get(row.id);
+
+        if (!existing.searches.includes(row.search)) {
+          existing.searches.push(row.search);
+        }
+
+        existing.reportedViews = Math.max(
+          existing.reportedViews,
+          row.reportedViews
+        );
       }
     }
 
-    const duplicates = candidates.filter(row =>
-      unique.get(row.id) !== row
+    const excluded = qualifying.filter(r =>
+      !r.candidate
     );
 
-    const excluded = qualifying.filter(row =>
-      !row.candidate
+    const unresolved = qualifying.filter(r =>
+      r.relevance.broad && !r.id
     );
 
     console.log(
-      "\n========== TEST #24B SUMMARY =========="
+      "\n========== TEST #24C SUMMARY =========="
     );
 
     console.log(
@@ -438,7 +440,7 @@ function diagnose(card, search) {
     );
 
     console.log(
-      "TOTAL CARD OBSERVATIONS:",
+      "TOTAL BING CARD OBSERVATIONS:",
       all.length
     );
 
@@ -453,32 +455,37 @@ function diagnose(card, search) {
     );
 
     console.log(
-      "BROAD WEATHER MATCHES:",
-      broad.length
+      "YOUTUBE-ID CANDIDATES WITH 1000+ VIEWS:",
+      youtubeCandidates.length
     );
 
     console.log(
-      "RECOVERED DISTINCT YOUTUBE IDS:",
+      "BROAD WEATHER YOUTUBE CANDIDATES:",
+      relevant.length
+    );
+
+    console.log(
+      "DISTINCT BROAD-MATCH YOUTUBE IDS:",
       unique.size
     );
 
     console.log(
       "DUPLICATE CANDIDATE OBSERVATIONS:",
-      duplicates.length
+      relevant.length - unique.size
     );
 
     console.log(
-      "BROAD MATCHES MISSING ID:",
-      broad.filter(row => !row.id).length
+      "RELEVANT CARDS MISSING YOUTUBE ID:",
+      unresolved.length
     );
 
     console.log(
-      "EXCLUDED 1000+ OBSERVATIONS:",
+      "EXCLUDED 1000+ CARD OBSERVATIONS:",
       excluded.length
     );
 
     console.log(
-      "\nRECOVERED CANDIDATES:",
+      "\nRECOVERED DISTINCT CANDIDATES:",
       JSON.stringify(
         [...unique.values()],
         null,
@@ -487,42 +494,34 @@ function diagnose(card, search) {
     );
 
     console.log(
-      "\nEXCLUDED 1000+ CARDS AND REASONS:",
-      JSON.stringify(
-        excluded,
-        null,
-        2
-      )
+      "\nEXCLUDED CARDS WITH REASONS:",
+      JSON.stringify(excluded, null, 2)
     );
 
     console.log(
-      "\nDUPLICATE RECORDS:",
-      JSON.stringify(
-        duplicates,
-        null,
-        2
-      )
+      "\nUNRESOLVED RELEVANT CARDS:",
+      JSON.stringify(unresolved, null, 2)
     );
 
     console.log(
-      "\nALL CARD DIAGNOSTICS:",
-      JSON.stringify(
-        all,
-        null,
-        2
-      )
+      "\nALL SEARCH OBSERVATIONS:",
+      JSON.stringify(all, null, 2)
     );
 
     console.log("\nFINAL STATUS");
+
     console.log(
-      "TEST #24B COMPLETED — DIAGNOSTIC ONLY."
+      "TEST #24C COMPLETED — DIAGNOSTIC ONLY."
     );
+
     console.log(
       "NO A-F GRADES GENERATED."
     );
+
     console.log(
-      "VIDEO IDS AND VIEW COUNTS NOT INDEPENDENTLY VERIFIED."
+      "BING VIEW COUNTS ARE NOT INDEPENDENTLY VERIFIED."
     );
+
     console.log(
       "BLOGGER AND ENGINES 1/2 UNCHANGED."
     );
@@ -537,7 +536,7 @@ function diagnose(card, search) {
 
 })().catch(error => {
   console.error(
-    "ENGINE 3 TEST #24B ERROR:",
+    "ENGINE 3 TEST #24C ERROR:",
     error
   );
   process.exitCode = 1;
