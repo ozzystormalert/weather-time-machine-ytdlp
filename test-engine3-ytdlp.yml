@@ -1,0 +1,28 @@
+name: Engine 3 - Independent yt-dlp Test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install yt-dlp
+        run: python -m pip install --upgrade yt-dlp
+      - name: Run independent YouTube test
+        run: node audit.js
+      - name: Save results for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-test-results
+          path: audit-results.json
+          if-no-files-found: ignore
