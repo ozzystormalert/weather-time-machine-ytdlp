@@ -3,9 +3,9 @@
 
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #24
-// PROVISIONAL A–F GRADING
-// No changes to Blogger or Engines 1 and 2.
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #24 CORRECTED
+// Provisional A-F grading with relevance filtering.
+// No changes to Blogger, Engines 1/2, or verified grades.
 
 const BASE_QUERY =
   process.env.WEATHER_QUERY ||
@@ -23,6 +23,15 @@ const SEARCHES = [...new Set([
   ROOT_QUERY + " youtube",
   ROOT_QUERY + " local news"
 ])];
+
+// Provisional grading thresholds.
+function grade(count) {
+  if (count >= 20) return "A";
+  if (count >= 15) return "B";
+  if (count >= 10) return "C";
+  if (count >= 5) return "D";
+  return "F";
+}
 
 function parseViews(value) {
   const match = String(value || "").match(
@@ -87,12 +96,39 @@ function youtubeIds(value) {
   return [...ids];
 }
 
-function grade(count) {
-  if (count >= 20) return "A";
-  if (count >= 15) return "B";
-  if (count >= 10) return "C";
-  if (count >= 5) return "D";
-  return "F";
+// Test #24 event relevance rules.
+// These rules are specific to Hurricane Sandy in New Jersey.
+// Other events must be configured separately.
+function relevance(title) {
+  const text = String(title || "").toLowerCase();
+
+  const event =
+    /\b(sandy|superstorm)\b/.test(text);
+
+  const place =
+    /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(text);
+
+  const weather =
+    /\b(hurricane|storm surge|coastal flooding|flooding|evacuation|landfall)\b/.test(text);
+
+  const year =
+    /\b2012\b/.test(text);
+
+  const strict =
+    event && (place || year);
+
+  const broad =
+    event || (weather && place);
+
+  return {
+    strict,
+    broad,
+    category: strict
+      ? "STRICT"
+      : broad
+        ? "BROAD"
+        : "EXCLUDED"
+  };
 }
 
 async function extract(page) {
@@ -121,7 +157,8 @@ async function extract(page) {
       const labels = [
         ...node.querySelectorAll("*")
       ].filter(element => {
-        const ownText = (element.innerText || "").trim();
+        const ownText =
+          (element.innerText || "").trim();
 
         return viewPattern.test(ownText) &&
           ![...element.children].some(child =>
@@ -130,7 +167,8 @@ async function extract(page) {
             )
           );
       }).map(element =>
-        (element.innerText || "").match(viewPattern)?.[0]
+        (element.innerText || "")
+          .match(viewPattern)?.[0]
       ).filter(Boolean);
 
       const evidence = [];
@@ -207,9 +245,8 @@ function identify(card) {
     let successfulSearches = 0;
 
     console.log(
-      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24"
+      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24 CORRECTED"
     );
-    console.log("PROVISIONAL A–F GRADING");
     console.log("EVENT QUERY:", BASE_QUERY);
     console.log("MINIMUM VIEWS:", MIN_VIEWS);
 
@@ -262,6 +299,7 @@ function identify(card) {
             title: card.title,
             views: parseViews(card.label),
             viewLabel: card.label,
+            relevance: relevance(card.title),
             ...identity
           });
         }
@@ -281,9 +319,21 @@ function identify(card) {
       row => row.views >= MIN_VIEWS
     );
 
+    const relevant = qualifying.filter(
+      row => row.relevance.broad
+    );
+
+    const excluded = qualifying.filter(
+      row => !row.relevance.broad
+    );
+
+    const unresolved = relevant.filter(
+      row => !row.id
+    );
+
     const unique = new Map();
 
-    for (const row of qualifying) {
+    for (const row of relevant) {
       if (!row.id) continue;
 
       if (!unique.has(row.id)) {
@@ -291,6 +341,7 @@ function identify(card) {
           id: row.id,
           title: row.title,
           reportedViews: row.views,
+          relevance: row.relevance.category,
           searches: [row.search],
           youtubeUrl:
             "https://www.youtube.com/watch?v=" +
@@ -308,23 +359,23 @@ function identify(card) {
         if (!existing.searches.includes(row.search)) {
           existing.searches.push(row.search);
         }
+
+        if (row.relevance.strict) {
+          existing.relevance = "STRICT";
+        }
       }
     }
 
-    const unresolved = qualifying.filter(
-      row => !row.id
-    );
-
     const count = unique.size;
 
-    // An F requires a successful search and sufficient
-    // identification coverage. Otherwise use N/A.
-    const completeEnough =
+    // Unresolved relevant cards are reported as uncertainty.
+    // They do not automatically suppress the provisional grade.
+    // No F is assigned if zero candidates were identified.
+    const sufficientData =
       successfulSearches === SEARCHES.length &&
-      observations.length > 0 &&
-      unresolved.length === 0;
+      count > 0;
 
-    const provisionalGrade = completeEnough
+    const provisionalGrade = sufficientData
       ? grade(count)
       : "N/A";
 
@@ -332,25 +383,25 @@ function identify(card) {
       engine: 3,
       test: 24,
       query: BASE_QUERY,
-      grade: provisionalGrade,
-      gradeStatus:
-        completeEnough
-          ? "PROVISIONAL"
-          : "INSUFFICIENT_DATA",
+      provisionalGrade,
+      gradeStatus: sufficientData
+        ? "PROVISIONAL_UNVERIFIED"
+        : "INSUFFICIENT_DATA",
       gradingSource:
-        "Bing-reported view counts",
+        "Bing-reported video views",
       minimumViews: MIN_VIEWS,
-      uniqueQualifyingCandidates: count,
+      uniqueRelevantCandidates: count,
+      unresolvedRelevantCards: unresolved.length,
+      excludedCardObservations: excluded.length,
       independentlyVerified: 0,
-      unresolvedQualifyingCards: unresolved.length,
       successfulSearches,
       totalSearches: SEARCHES.length,
       candidates: [...unique.values()]
     };
 
-    console.log("\n==============================");
-    console.log("TEST #24 — GRADING SUMMARY");
-    console.log("==============================");
+    console.log("\n================================");
+    console.log("TEST #24 — CORRECTED GRADING SUMMARY");
+    console.log("================================");
 
     console.log(
       "SEARCHES COMPLETED:",
@@ -365,22 +416,27 @@ function identify(card) {
     );
 
     console.log(
-      "CARDS WITH VIEW COUNTS:",
-      withViews.length
-    );
-
-    console.log(
       "CARDS WITH 1000+ VIEWS:",
       qualifying.length
     );
 
     console.log(
-      "DISTINCT YOUTUBE ID CANDIDATES:",
+      "RELEVANT 1000+ CARD OBSERVATIONS:",
+      relevant.length
+    );
+
+    console.log(
+      "EXCLUDED CARD OBSERVATIONS:",
+      excluded.length
+    );
+
+    console.log(
+      "DISTINCT RELEVANT YOUTUBE ID CANDIDATES:",
       count
     );
 
     console.log(
-      "UNRESOLVED QUALIFYING CARDS:",
+      "UNRESOLVED RELEVANT CARDS:",
       unresolved.length
     );
 
@@ -406,18 +462,18 @@ function identify(card) {
 
     console.log("\nFINAL STATUS");
 
-    if (completeEnough) {
+    if (sufficientData) {
       console.log(
-        "TEST #24 PASSED — PROVISIONAL GRADING CALCULATED."
+        "TEST #24 COMPLETED — PROVISIONAL A-F GRADE CALCULATED."
       );
     } else {
       console.log(
-        "TEST #24 INCOMPLETE — GRADE N/A."
+        "TEST #24 INCOMPLETE — INSUFFICIENT RELEVANT DATA."
       );
     }
 
     console.log(
-      "TEST #25 STILL REQUIRED FOR INDEPENDENT VERIFICATION."
+      "TEST #25 REQUIRED — INDEPENDENT VIDEO VERIFICATION."
     );
 
     console.log(
