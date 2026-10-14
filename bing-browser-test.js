@@ -1,5 +1,4 @@
 
-
 const { chromium } = require("playwright");
 
 const query = "blizzard 1978 illinois news";
@@ -7,14 +6,13 @@ const url =
   "https://www.bing.com/videos/search?q=" +
   encodeURIComponent(query);
 
-function parseViews(value) {
-  const match = value.match(
-    /([\d,.]+)\s*([KMB])?\s*views?/i
+function parseViews(text) {
+  const match = String(text).match(
+    /([\d,.]+)\s*([KMB])?\s*views?\b/i
   );
-
   if (!match) return null;
 
-  const number = Number(match[1].replace(/,/g, ""));
+  const value = Number(match[1].replace(/,/g, ""));
   const multiplier = {
     K: 1000,
     M: 1000000,
@@ -22,7 +20,7 @@ function parseViews(value) {
   };
 
   return Math.round(
-    number * (multiplier[match[2]?.toUpperCase()] || 1)
+    value * (multiplier[(match[2] || "").toUpperCase()] || 1)
   );
 }
 
@@ -37,60 +35,100 @@ function parseViews(value) {
       locale: "en-US"
     });
 
-    console.log("ENGINE 3 - BING BROWSER TEST");
-    console.log("SEARCH:", url);
+    console.log("ENGINE 3 - BING VIDEO COUNT TEST");
+    console.log("QUERY:", query);
 
     const response = await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 45000
     });
 
-    await page.waitForTimeout(6000);
+    await page.waitForTimeout(4000);
 
     console.log("HTTP STATUS:", response?.status());
     console.log("PAGE TITLE:", await page.title());
-    console.log("FINAL URL:", page.url());
 
-    const body = await page.locator("body").innerText();
+    const results = await page.evaluate(() => {
+      const selectors = [
+        ".mc_vtvc",
+        ".mc_vtvc_con",
+        ".vrhdata",
+        ".videoItem",
+        ".video-item",
+        "[data-videoid]"
+      ];
 
-    console.log("PAGE LENGTH:", body.length);
-    console.log("SAMPLE:", body.slice(0, 3000));
+      const nodes = [
+        ...new Set(
+          selectors.flatMap(selector =>
+            [...document.querySelectorAll(selector)]
+          )
+        )
+      ];
 
-    const viewMatches = [
-      ...body.matchAll(
-        /[\d,.]+\s*[KMB]?\s*views?/gi
-      )
-    ].map(match => match[0]);
+      return nodes.map(node => {
+        const text = (node.innerText || "").trim();
+        const anchors = [...node.querySelectorAll("a[href]")];
 
-    console.log("VIEW COUNT LABELS:", viewMatches);
+        const link = anchors.find(a =>
+          /youtube\.com|youtu\.be|bing\.com\/videos/i.test(
+            a.href
+          )
+        ) || anchors[0];
 
-    const parsed = viewMatches
-      .map(parseViews)
-      .filter(value => value !== null);
+        return {
+          title: (link?.innerText || text.split("\n")[0] || "")
+            .trim()
+            .slice(0, 180),
+          url: link?.href || "",
+          text: text.slice(0, 1200)
+        };
+      }).filter(item => item.url && /\bviews?\b/i.test(item.text));
+    });
+
+    const unique = new Map();
+
+    for (const result of results) {
+      const views = parseViews(result.text);
+      if (views === null) continue;
+
+      const key = result.url.split("#")[0];
+
+      if (!unique.has(key)) {
+        unique.set(key, {
+          title: result.title,
+          url: result.url,
+          views
+        });
+      }
+    }
+
+    const videos = [...unique.values()];
+    const qualified = videos.filter(video => video.views >= 1000);
+
+    console.log("RESULT CONTAINERS FOUND:", results.length);
+    console.log("UNIQUE VIDEOS WITH VIEW COUNTS:", videos.length);
+    console.log("VIDEOS WITH 1000+ VIEWS:", qualified.length);
 
     console.log(
-      "VIEW COUNTS 1000+:",
-      parsed.filter(value => value >= 1000).length
+      "QUALIFYING VIDEOS:",
+      JSON.stringify(qualified, null, 2)
     );
 
-    console.log(
-      "NOTE: Counts are preliminary text matches, not yet deduplicated videos."
-    );
-
-    if (viewMatches.length === 0) {
+    if (videos.length === 0) {
       console.log(
-        "TEST INCONCLUSIVE: No video view counts detected."
+        "INCONCLUSIVE: No video-linked view counts were extracted."
       );
       process.exitCode = 1;
     } else {
       console.log(
-        "TEST PASSED: Bing returned view-count labels."
+        "EXTRACTION TEST COMPLETED. Review links and counts."
       );
     }
-  } catch (error) {
-    console.error("TEST ERROR:", error.message);
-    process.exitCode = 1;
   } finally {
     await browser.close();
   }
-})();
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
