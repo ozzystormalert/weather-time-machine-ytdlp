@@ -3,6 +3,13 @@ name: Engine 3 - Independent Bing Test
 
 'on':
   workflow_dispatch:
+    inputs:
+      weather_query:
+        description: "Weather event, year, state, and news"
+        required: true
+        type: string
+        default: "hurricane sandy 2012 new jersey news"
+
   push:
     paths:
       - '.github/workflows/test-engine3-bing.yml'
@@ -15,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
+    env:
+      WEATHER_QUERY: ${{ inputs.weather_query || 'blizzard 1978 illinois news' }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,9 +36,8 @@ jobs:
 
       - name: Install Playwright
         run: |
-          npm install playwright
+          npm install --no-save playwright
           npx playwright install --with-deps chromium
 
       - name: Run Bing browser test
         run: node bing-browser-test.js
-
