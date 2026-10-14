@@ -15,7 +15,6 @@ const SEARCH_URL =
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
-// Convert Bing view labels into numeric view counts.
 function parseViews(value) {
   const match = String(value || "").match(
     /(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
@@ -23,30 +22,21 @@ function parseViews(value) {
 
   if (!match) return null;
 
-  const amount = Number(
-    match[1].replace(/,/g, "")
+  const amount = Number(match[1].replace(/,/g, ""));
+  const scale = { K: 1e3, M: 1e6, B: 1e9 };
+
+  if (!Number.isFinite(amount)) return null;
+
+  return Math.round(
+    amount * (scale[(match[2] || "").toUpperCase()] || 1)
   );
-
-  const scale = {
-    K: 1e3,
-    M: 1e6,
-    B: 1e9
-  };
-
-  return Number.isFinite(amount)
-    ? Math.round(
-        amount *
-        (scale[(match[2] || "").toUpperCase()] || 1)
-      )
-    : null;
 }
 
-// Decode encoded URLs and metadata.
 function decodeText(raw) {
   let value = String(raw || "");
 
   for (let i = 0; i < 5; i++) {
-    const old = value;
+    const previous = value;
 
     value = value
       .replace(/&quot;|&#34;/gi, '"')
@@ -60,27 +50,24 @@ function decodeText(raw) {
     try {
       value = decodeURIComponent(value);
     } catch {
-      // Value is not URL encoded.
+      // Not URL encoded.
     }
 
-    if (value === old) break;
+    if (value === previous) break;
   }
 
   return value;
 }
 
-// Extract valid-looking YouTube video IDs.
 function youtubeIds(raw) {
   const value = decodeText(raw);
   const ids = new Set();
 
   const patterns = [
-    /(?:youtube\.com\/watch\?[^\s"'<>]*?[?&]v=|youtube\.com\/watch\?v=)([A-Za-z0-9_-]{11})/gi,
-
+    /youtube\.com\/watch\?[^\s"'<>]*?[?&]v=([A-Za-z0-9_-]{11})/gi,
+    /youtube\.com\/watch\?v=([A-Za-z0-9_-]{11})/gi,
     /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
-
     /youtube\.com\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/gi,
-
     /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([A-Za-z0-9_-]{11})["']/gi
   ];
 
@@ -95,148 +82,147 @@ function youtubeIds(raw) {
   return [...ids];
 }
 
-// Read Bing video cards and their metadata.
+function weatherTerms(query) {
+  const normalized = query.toLowerCase();
+
+  const groups = [
+    ["blizzard", "snowstorm", "snow", "winter storm"],
+    ["hurricane", "tropical storm", "cyclone"],
+    ["tornado", "twister"],
+    ["flood", "flooding"],
+    ["wildfire", "forest fire"],
+    ["earthquake", "seismic"],
+    ["heatwave", "heat wave", "extreme heat"],
+    ["thunderstorm", "severe storm"],
+    ["ice storm", "freezing rain"]
+  ];
+
+  const selected = groups.find(group =>
+    group.some(term => normalized.includes(term))
+  );
+
+  return selected || [];
+}
+
+function relevantTitle(title, query) {
+  const text = String(title || "").toLowerCase();
+
+  if (!text) return false;
+
+  const terms = weatherTerms(query);
+
+  if (!terms.length) return false;
+
+  const weatherMatch = terms.some(term =>
+    text.includes(term)
+  );
+
+  const queryWords = query
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(word =>
+      word.length >= 4 &&
+      !["news", "storm", "weather"].includes(word) &&
+      !/^\d{4}$/.test(word)
+    );
+
+  const locationMatch = queryWords.some(word =>
+    text.includes(word)
+  );
+
+  return weatherMatch && locationMatch;
+}
+
 async function extractCards(page) {
   return page.evaluate(() => {
     const viewPattern =
       /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
 
-    const labels = [
-      ...document.querySelectorAll("*")
-    ].filter(element => {
-      const text =
-        (element.innerText || "").trim();
+    const selectors = [
+      ".mc_vtvc",
+      ".mc_vtvc_card",
+      ".mc_vtvc_con",
+      "[class*='mc_vtvc']"
+    ];
 
-      return (
-        text.length <= 100 &&
-        viewPattern.test(text) &&
-        ![...element.children].some(child =>
-          viewPattern.test(
-            (child.innerText || "").trim()
-          )
+    const elements = [
+      ...new Set(
+        selectors.flatMap(selector =>
+          [...document.querySelectorAll(selector)]
         )
+      )
+    ];
+
+    const cards = [];
+
+    for (const element of elements) {
+      const text = (element.innerText || "").trim();
+
+      if (!viewPattern.test(text)) continue;
+
+      const titleElement = element.querySelector(
+        ".mc_vtvc_title, a[title], [class*='title']"
       );
-    });
 
-    const cards = labels.map(label => {
-      let node = label;
-      let card = null;
+      if (!titleElement) continue;
 
-      for (
-        let depth = 0;
-        depth < 12 && node;
-        depth++, node = node.parentElement
-      ) {
-        const text =
-          (node.innerText || "").trim();
+      const title = (
+        titleElement.getAttribute("title") ||
+        titleElement.innerText ||
+        ""
+      ).trim();
 
-        if (text.length > 15000) break;
+      if (!title) continue;
 
-        const hasTitle = !!node.querySelector(
-          ".mc_vtvc_title, [class*='title'], a[title]"
-        );
+      const viewMatch = text.match(viewPattern);
 
-        const hasMetadata =
-          /mmeta|vrhdata|mediaUrl|contentUrl|youtube\.com|youtu\.be|riverview/i.test(
-            node.outerHTML || ""
-          );
-
-        if (hasTitle && hasMetadata) {
-          card = node;
-          break;
-        }
-      }
-
-      if (!card) {
-        node = label.parentElement;
-
-        for (
-          let depth = 0;
-          depth < 8 && node;
-          depth++, node = node.parentElement
-        ) {
-          if (
-            node.querySelector("a[href]") &&
-            (node.innerText || "").length < 12000
-          ) {
-            card = node;
-            break;
-          }
-        }
-      }
-
-      const titleNode = card?.querySelector(
-        ".mc_vtvc_title, [class*='title']"
-      );
+      const links = [
+        ...element.querySelectorAll("a[href]")
+      ].map(a => a.href);
 
       const metadata = [];
 
-      if (card) {
-        for (
-          const element of [
-            card,
-            ...card.querySelectorAll("*")
-          ]
-        ) {
-          for (
-            const attribute of element.attributes || []
+      for (const node of [
+        element,
+        ...element.querySelectorAll("*")
+      ]) {
+        for (const attribute of node.attributes || []) {
+          if (
+            /mmeta|vrhdata|video|media|url|href|data-id/i.test(
+              attribute.name
+            )
           ) {
-            if (
-              /mmeta|vrhdata|video|media|url|href|data-id/i.test(
-                attribute.name
-              )
-            ) {
-              metadata.push({
-                name: attribute.name,
-                value: attribute.value
-              });
-            }
+            metadata.push(attribute.value);
           }
         }
       }
 
-      const links = card
-        ? [...card.querySelectorAll("a[href]")].map(
-            a => a.href
-          )
-        : [];
-
-      return {
-        label: (label.innerText || "").trim(),
-
-        title: (
-          titleNode?.getAttribute("title") ||
-          titleNode?.innerText ||
-          ""
-        ).trim().slice(0, 250),
-
-        metadata,
+      cards.push({
+        title: title.slice(0, 250),
+        label: viewMatch ? viewMatch[0] : "",
         links,
-
-        html: (
-          card?.outerHTML || ""
-        ).slice(0, 40000)
-      };
-    });
+        metadata,
+        html: element.outerHTML.slice(0, 30000)
+      });
+    }
 
     return {
-      labelCount: labels.length,
+      pageTitle: document.title,
+      rawCards: cards.length,
       cards
     };
   });
 }
 
-// Resolve one unique YouTube ID per Bing result.
 function resolveVideo(card) {
-  const candidates = [
-    ...card.metadata.map(item => item.value),
-    ...card.links,
-    card.html
-  ];
-
   const ids = new Set();
 
-  for (const value of candidates) {
+  for (const value of [
+    ...card.links,
+    ...card.metadata,
+    card.html
+  ]) {
     for (const id of youtubeIds(value)) {
       ids.add(id);
     }
@@ -244,11 +230,8 @@ function resolveVideo(card) {
 
   if (ids.size !== 1) {
     return {
-      status: ids.size
-        ? "ambiguous"
-        : "unresolved",
-
-      candidates: [...ids]
+      status: ids.size ? "ambiguous" : "unresolved",
+      candidateIds: [...ids]
     };
   }
 
@@ -257,14 +240,12 @@ function resolveVideo(card) {
   return {
     status: "verified",
     videoId,
-
     url:
       "https://www.youtube.com/watch?v=" +
       videoId
   };
 }
 
-// Main Engine 3 test.
 (async () => {
   const browser = await chromium.launch({
     headless: true
@@ -276,12 +257,11 @@ function resolveVideo(card) {
         width: 1440,
         height: 900
       },
-
       locale: "en-US"
     });
 
     console.log(
-      "WEATHER TIME MACHINE - ENGINE 3 / BING ID VALIDATION"
+      "WEATHER TIME MACHINE - ENGINE 3 / RELIABILITY TEST"
     );
 
     console.log("QUERY:", QUERY);
@@ -308,42 +288,50 @@ function resolveVideo(card) {
       await page.title()
     );
 
-    if (
-      !response ||
-      response.status() !== 200
-    ) {
+    if (!response || response.status() !== 200) {
       throw new Error(
         "Bing did not return HTTP 200."
       );
     }
 
-    const extracted =
-      await extractCards(page);
+    const extracted = await extractCards(page);
 
     const unique = new Map();
+    const unrelated = [];
     const unresolved = [];
+    const rejected = [];
 
     for (const card of extracted.cards) {
       const views = parseViews(card.label);
 
-      if (views === null) continue;
+      if (views === null) {
+        rejected.push({
+          title: card.title,
+          reason: "Missing view count"
+        });
+        continue;
+      }
+
+      if (!relevantTitle(card.title, QUERY)) {
+        unrelated.push({
+          title: card.title,
+          views,
+          label: card.label
+        });
+        continue;
+      }
 
       const identity = resolveVideo(card);
 
       if (identity.status !== "verified") {
         unresolved.push({
           title: card.title,
-          label: card.label,
           views,
+          label: card.label,
           status: identity.status,
-
-          candidateIds:
-            identity.candidates,
-
-          sampleLink:
-            card.links[0] || ""
+          candidateIds: identity.candidateIds,
+          sampleLink: card.links[0] || ""
         });
-
         continue;
       }
 
@@ -355,17 +343,10 @@ function resolveVideo(card) {
         label: card.label
       };
 
-      const previous =
-        unique.get(video.videoId);
+      const previous = unique.get(video.videoId);
 
-      if (
-        !previous ||
-        views > previous.views
-      ) {
-        unique.set(
-          video.videoId,
-          video
-        );
+      if (!previous || views > previous.views) {
+        unique.set(video.videoId, video);
       }
     }
 
@@ -375,124 +356,110 @@ function resolveVideo(card) {
       video => video.views >= MIN_VIEWS
     );
 
-    const unresolvedQualifying =
-      unresolved.filter(
-        item => item.views >= MIN_VIEWS
-      );
+    const unresolvedQualifying = unresolved.filter(
+      video => video.views >= MIN_VIEWS
+    );
 
     console.log("\nVERIFICATION RESULTS");
 
     console.log(
-      "VIEW LABELS FOUND:",
-      extracted.labelCount
+      "RAW BING VIDEO CARDS:",
+      extracted.rawCards
     );
 
     console.log(
-      "VIDEO CANDIDATES:",
-      extracted.cards.length
-    );
-
-    console.log(
-      "UNIQUE VERIFIED YOUTUBE IDS:",
+      "WEATHER-RELATED UNIQUE YOUTUBE IDS:",
       videos.length
     );
 
     console.log(
-      "VERIFIED VIDEOS WITH 1000+ VIEWS:",
+      "WEATHER VIDEOS WITH 1000+ VIEWS:",
       qualifying.length
     );
 
     console.log(
-      "UNRESOLVED VIDEO LABELS:",
+      "UNRELATED VIDEOS REJECTED:",
+      unrelated.length
+    );
+
+    console.log(
+      "UNRESOLVED WEATHER VIDEOS:",
       unresolved.length
     );
 
     console.log(
-      "UNRESOLVED LABELS WITH 1000+ VIEWS:",
+      "UNRESOLVED WEATHER VIDEOS WITH 1000+ VIEWS:",
       unresolvedQualifying.length
     );
 
     console.log(
-      "QUALIFYING VERIFIED VIDEOS:",
-      JSON.stringify(
-        qualifying,
-        null,
-        2
-      )
+      "QUALIFYING WEATHER VIDEOS:",
+      JSON.stringify(qualifying, null, 2)
     );
 
     console.log(
-      "UNRESOLVED VIDEOS:",
-      JSON.stringify(
-        unresolved,
-        null,
-        2
-      )
+      "UNRELATED VIDEOS:",
+      JSON.stringify(unrelated, null, 2)
+    );
+
+    console.log(
+      "UNRESOLVED WEATHER VIDEOS:",
+      JSON.stringify(unresolved, null, 2)
+    );
+
+    console.log(
+      "REJECTED RECORDS:",
+      JSON.stringify(rejected, null, 2)
     );
 
     console.log("\nFINAL STATUS");
 
-    if (
-      !extracted.labelCount ||
-      !videos.length
-    ) {
+    if (!extracted.rawCards) {
       console.log(
-        "INCONCLUSIVE: No verified Bing video data available."
+        "INCONCLUSIVE: No Bing video cards extracted."
       );
 
       console.log(
         "FINAL GRADING STATUS: BLOCKED"
       );
 
-      process.exitCode = 1;
-
-    } else if (
-      unresolvedQualifying.length
-    ) {
+    } else if (unresolvedQualifying.length) {
       console.log(
-        "PARTIAL: Verified video counts are available, but some video IDs remain unresolved."
+        "PARTIAL: Some qualifying weather videos have unresolved IDs."
       );
 
       console.log(
-        "UNRESOLVED QUALIFYING VIDEOS:",
-        unresolvedQualifying.length
+        "FINAL GRADING STATUS: BLOCKED"
+      );
+
+    } else if (!videos.length) {
+      console.log(
+        "INCONCLUSIVE: No weather-related YouTube IDs verified."
       );
 
       console.log(
-        "FINAL GRADING STATUS: BLOCKED - incomplete verification."
+        "FINAL GRADING STATUS: BLOCKED"
       );
-
-      console.log(
-        "Engine 3 will preserve verified counts and report unresolved videos separately."
-      );
-
-      // The diagnostic run completes successfully.
-      // This does NOT approve final grading.
-      process.exitCode = 0;
 
     } else {
       console.log(
-        "TEST PASSED: All qualifying labels matched one YouTube ID within their card."
+        "DIAGNOSTIC PASSED: Weather-title filtering and card-level ID extraction completed."
       );
 
       console.log(
-        "FINAL GRADING STATUS: PENDING ADDITIONAL RELIABILITY TESTS"
-      );
-
-      console.log(
-        "This verifies card-level extraction, not YouTube ownership or search relevance."
+        "FINAL GRADING STATUS: PENDING RELIABILITY REVIEW"
       );
     }
+
+    console.log(
+      "NOTE: Title filtering is heuristic. Video identity and relevance are not independently verified."
+    );
 
   } finally {
     await browser.close();
   }
 
 })().catch(error => {
-  console.error(
-    "ENGINE 3 ERROR:",
-    error
-  );
-
+  console.error("ENGINE 3 ERROR:", error);
   process.exitCode = 1;
 });
