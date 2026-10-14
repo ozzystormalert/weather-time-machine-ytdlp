@@ -1,5 +1,6 @@
 name: Engine 3 - Independent yt-dlp Test
 on:
+  push:
   workflow_dispatch:
 permissions:
   contents: read
