@@ -3,302 +3,434 @@
 
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #23
-// Independent YouTube verification of Test #22 candidates.
-// Diagnostic only. No Blogger or A-F grading changes.
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #24
+// PROVISIONAL A–F GRADING
+// No changes to Blogger or Engines 1 and 2.
+
+const BASE_QUERY =
+  process.env.WEATHER_QUERY ||
+  "hurricane sandy 2012 new jersey news";
 
 const MIN_VIEWS = 1000;
 
-const CANDIDATES = [
-  ["SAfxet_hvPQ", "Sandy residents prep sandbags for potential flooding", 2000],
-  ["oTjITQIhgn4", "From the archives: Superstorm Sandy's devastation in New Jersey in 2012", 4000],
-  ["_rf-4fgUOUE", "Superstorm, Hurricane Sandy 2012: Superstorm Sandy Wipes Out Seaside Heights, New Jersey", 202000],
-  ["fMGhdW2RHKc", "Superstorm Sandy Hits Sea Bright NJ 2012", 5500],
-  ["PAgKoHiG9UA", "Hurricane Sandy hits Sea Bright, NJ", 9700],
-  ["3eCGWuXu3_I", "Superstorm Sandy 10 Years Later, a Comprehensive Lookback at the Disaster", 57000],
-  ["9QkBtxiowiA", "Most dramatic footage of Superstorm Sandy", 195300],
-  ["7oiJhI38SrM", "Sandy makes landfall in US East Coast", 2200],
-  ["Y6TKmsReh88", "1,000 Miles Wide: The True Story of Hurricane Sandy", 1100],
-  ["ASr7Vrb04lc", "The track of Hurricane Sandy (2012)", 84300],
-  ["wroRU3yDBqw", "Sandy: The Storm That Almost Ended New York Forever", 353500],
-  ["WTyjw9YLgog", "Marking a decade since Superstorm Sandy", 6200],
-  ["SEj9bc2bH3E", "2012: Hurricane Sandy", 2000],
-  ["RcLrl242WZQ", "Sandy: New York City's Nightmare Hurricane", 245400],
-  ["RbMX2A545Wo", "Hurricane Sandy Aftermath Video: Inside the Chaos of Breezy Point", 562500]
-];
+const ROOT_QUERY = BASE_QUERY
+  .replace(/\s+news\s*$/i, "")
+  .trim();
 
-function normalize(text) {
-  return String(text || "")
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
+const SEARCHES = [...new Set([
+  BASE_QUERY,
+  ROOT_QUERY + " footage",
+  ROOT_QUERY + " youtube",
+  ROOT_QUERY + " local news"
+])];
 
-function titleMatches(expected, actual) {
-  const a = normalize(expected);
-  const b = normalize(actual);
+function parseViews(value) {
+  const match = String(value || "").match(
+    /\b(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
+  );
 
-  if (!a || !b) return false;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
-
-  const words = a.split(" ").filter(w => w.length > 3);
-  if (!words.length) return false;
-
-  const actualWords = new Set(b.split(" "));
-  const matches = words.filter(w => actualWords.has(w)).length;
-
-  return matches / words.length >= 0.65;
-}
-
-function parseCount(value) {
-  if (value === null || value === undefined) return null;
-
-  const text = String(value).replace(/,/g, "").trim();
-  if (/^\d+$/.test(text)) return Number(text);
-
-  const match = text.match(/^([\d.]+)\s*([KMB])$/i);
   if (!match) return null;
 
+  const number = Number(match[1].replace(/,/g, ""));
   const multiplier = {
     K: 1000,
     M: 1000000,
     B: 1000000000
-  }[match[2].toUpperCase()];
+  }[(match[2] || "").toUpperCase()] || 1;
 
-  return Math.round(Number(match[1]) * multiplier);
+  return Number.isFinite(number)
+    ? Math.round(number * multiplier)
+    : null;
 }
 
-async function getOembed(context, id) {
-  const url =
-    "https://www.youtube.com/oembed?url=" +
-    encodeURIComponent("https://www.youtube.com/watch?v=" + id) +
-    "&format=json";
+function decode(value) {
+  let result = String(value || "");
 
-  try {
-    const response = await context.request.get(url, {
-      timeout: 15000,
-      failOnStatusCode: false
-    });
+  for (let i = 0; i < 5; i++) {
+    const previous = result;
 
-    if (!response.ok()) {
-      return {
-        available: false,
-        status: response.status(),
-        title: null
-      };
-    }
+    result = result
+      .replace(/&amp;|&#38;/gi, "&")
+      .replace(/&quot;|&#34;/gi, '"')
+      .replace(/\\u0026/gi, "&")
+      .replace(/\\u003d/gi, "=")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\\//g, "/");
 
-    const data = await response.json();
+    try {
+      result = decodeURIComponent(result);
+    } catch (_) {}
 
-    return {
-      available: true,
-      status: response.status(),
-      title: data.title || null,
-      author: data.author_name || null
-    };
-  } catch (error) {
-    return {
-      available: false,
-      status: null,
-      title: null,
-      error: error.message
-    };
+    if (result === previous) break;
   }
+
+  return result;
 }
 
-async function getYoutubeViews(context, id) {
-  const url = "https://www.youtube.com/watch?v=" + id;
+function youtubeIds(value) {
+  const source = decode(value);
+  const ids = new Set();
 
-  try {
-    const response = await context.request.get(url, {
-      timeout: 20000,
-      failOnStatusCode: false,
-      headers: {
-        "Accept-Language": "en-US,en;q=0.9"
-      }
-    });
+  const patterns = [
+    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?[?&]v=([A-Za-z0-9_-]{11})/gi,
+    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?v=([A-Za-z0-9_-]{11})/gi,
+    /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
+    /youtube(?:-nocookie)?\.com\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/gi
+  ];
 
-    if (!response.ok()) {
-      return {
-        views: null,
-        status: response.status(),
-        source: "unavailable"
-      };
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      ids.add(match[1]);
     }
+  }
 
-    const html = await response.text();
+  return [...ids];
+}
 
-    // Prefer the video-specific YouTube player response.
-    const patterns = [
-      /"videoDetails"\s*:\s*\{[\s\S]{0,12000}?"viewCount"\s*:\s*"(\d+)"/,
-      /"viewCount"\s*:\s*"(\d+)"/,
-      /itemprop="interactionCount"\s+content="(\d+)"/,
-      /content="(\d+)"\s+itemprop="interactionCount"/
+function grade(count) {
+  if (count >= 20) return "A";
+  if (count >= 15) return "B";
+  if (count >= 10) return "C";
+  if (count >= 5) return "D";
+  return "F";
+}
+
+async function extract(page) {
+  return page.evaluate(() => {
+    const nodes = [
+      ...document.querySelectorAll(".mc_vtvc.b_canvas")
     ];
 
-    for (let i = 0; i < patterns.length; i++) {
-      const match = html.match(patterns[i]);
+    const viewPattern =
+      /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
 
-      if (match) {
-        return {
-          views: parseCount(match[1]),
-          status: response.status(),
-          source: i === 0
-            ? "youtube-video-details"
-            : "youtube-page-candidate"
-        };
+    return nodes.map((node, index) => {
+      const titleElement = node.querySelector(
+        ".mc_vtvc_title, [class*='title'], a[title]"
+      );
+
+      const title = (
+        titleElement?.getAttribute("title") ||
+        titleElement?.innerText ||
+        node.getAttribute("aria-label") ||
+        ""
+      ).trim();
+
+      const text = (node.innerText || "").trim();
+
+      const labels = [
+        ...node.querySelectorAll("*")
+      ].filter(element => {
+        const ownText = (element.innerText || "").trim();
+
+        return viewPattern.test(ownText) &&
+          ![...element.children].some(child =>
+            viewPattern.test(
+              (child.innerText || "").trim()
+            )
+          );
+      }).map(element =>
+        (element.innerText || "").match(viewPattern)?.[0]
+      ).filter(Boolean);
+
+      const evidence = [];
+
+      for (const element of [
+        node,
+        ...node.querySelectorAll(
+          "[mmeta], [vrhdata], [ourl], [href], [data-mmeta]"
+        )
+      ]) {
+        for (const attribute of element.attributes || []) {
+          if (
+            /mmeta|vrhdata|ourl|href|video|media|url|data-id/i
+              .test(attribute.name)
+          ) {
+            evidence.push(attribute.value);
+          }
+        }
       }
-    }
 
-    return {
-      views: null,
-      status: response.status(),
-      source: "not-extracted"
-    };
-  } catch (error) {
-    return {
-      views: null,
-      status: null,
-      source: "request-error",
-      error: error.message
-    };
+      return {
+        index,
+        title: title.slice(0, 250),
+        label:
+          labels[0] ||
+          text.match(viewPattern)?.[0] ||
+          "",
+        evidence
+      };
+    });
+  });
+}
+
+function identify(card) {
+  const ids = new Set();
+
+  for (const value of card.evidence) {
+    for (const id of youtubeIds(value)) {
+      ids.add(id);
+    }
   }
+
+  const candidates = [...ids];
+
+  return {
+    id: candidates.length === 1
+      ? candidates[0]
+      : null,
+    candidates,
+    identityStatus:
+      candidates.length === 1
+        ? "BING_ID_CANDIDATE"
+        : candidates.length > 1
+          ? "AMBIGUOUS"
+          : "MISSING"
+  };
 }
 
 (async () => {
-  console.log(
-    "WEATHER TIME MACHINE — ENGINE 3 — TEST #23"
-  );
-  console.log(
-    "YOUTUBE ID, TITLE AND VIEW-COUNT VERIFICATION"
-  );
-  console.log("MINIMUM VIEWS:", MIN_VIEWS);
-  console.log("INPUT CANDIDATES:", CANDIDATES.length);
-
   const browser = await chromium.launch({
     headless: true
   });
 
   try {
-    const context = await browser.newContext({
-      locale: "en-US",
-      userAgent:
-        "Mozilla/5.0 (X11; Linux x86_64) " +
-        "AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36"
+    const page = await browser.newPage({
+      viewport: {
+        width: 1440,
+        height: 900
+      },
+      locale: "en-US"
     });
 
-    const results = [];
-    const seen = new Set();
+    const observations = [];
+    let successfulSearches = 0;
 
-    for (const [id, expectedTitle, bingViews] of CANDIDATES) {
-      console.log("\nCHECKING:", id);
+    console.log(
+      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24"
+    );
+    console.log("PROVISIONAL A–F GRADING");
+    console.log("EVENT QUERY:", BASE_QUERY);
+    console.log("MINIMUM VIEWS:", MIN_VIEWS);
 
-      if (seen.has(id)) {
-        results.push({
-          id,
-          status: "DUPLICATE",
-          reason: "Already checked"
+    for (let i = 0; i < SEARCHES.length; i++) {
+      const query = SEARCHES[i];
+
+      const url =
+        "https://www.bing.com/videos/search?q=" +
+        encodeURIComponent(query);
+
+      console.log(
+        "\nSEARCH",
+        i + 1,
+        "OF",
+        SEARCHES.length,
+        query
+      );
+
+      try {
+        const response = await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: 45000
         });
-        continue;
+
+        await page.waitForTimeout(4500);
+
+        console.log(
+          "HTTP STATUS:",
+          response?.status()
+        );
+
+        if (!response || response.status() !== 200) {
+          continue;
+        }
+
+        successfulSearches++;
+
+        const cards = await extract(page);
+
+        console.log(
+          "BING CARDS:",
+          cards.length
+        );
+
+        for (const card of cards) {
+          const identity = identify(card);
+
+          observations.push({
+            search: i + 1,
+            title: card.title,
+            views: parseViews(card.label),
+            viewLabel: card.label,
+            ...identity
+          });
+        }
+      } catch (error) {
+        console.log(
+          "SEARCH ERROR:",
+          error.message
+        );
       }
-
-      seen.add(id);
-
-      const identity = await getOembed(context, id);
-      const count = await getYoutubeViews(context, id);
-
-      const titleConfirmed =
-        identity.available &&
-        titleMatches(expectedTitle, identity.title);
-
-      const viewsConfirmed =
-        count.views !== null &&
-        count.views >= MIN_VIEWS &&
-        count.source === "youtube-video-details";
-
-      let status;
-
-      if (!identity.available || count.views === null) {
-        status = "UNVERIFIED";
-      } else if (!titleConfirmed) {
-        status = "TITLE_MISMATCH";
-      } else if (!viewsConfirmed) {
-        status = count.views < MIN_VIEWS
-          ? "BELOW_THRESHOLD"
-          : "UNVERIFIED";
-      } else {
-        status = "VERIFIED";
-      }
-
-      const result = {
-        id,
-        url: "https://www.youtube.com/watch?v=" + id,
-        expectedTitle,
-        youtubeTitle: identity.title,
-        titleConfirmed,
-        bingViews,
-        youtubeViews: count.views,
-        viewSource: count.source,
-        oembedHttpStatus: identity.status,
-        youtubeHttpStatus: count.status,
-        status
-      };
-
-      results.push(result);
-
-      console.log(JSON.stringify(result, null, 2));
     }
 
-    const countStatus = status =>
-      results.filter(r => r.status === status).length;
+    const withViews = observations.filter(
+      row => row.views !== null
+    );
 
-    console.log("\n=================================");
-    console.log("TEST #23 — VERIFICATION SUMMARY");
-    console.log("=================================");
+    const qualifying = withViews.filter(
+      row => row.views >= MIN_VIEWS
+    );
 
-    console.log("INPUT CANDIDATES:", CANDIDATES.length);
-    console.log("UNIQUE IDS:", seen.size);
-    console.log("VERIFIED:", countStatus("VERIFIED"));
-    console.log("UNVERIFIED:", countStatus("UNVERIFIED"));
-    console.log("TITLE MISMATCH:", countStatus("TITLE_MISMATCH"));
-    console.log("BELOW 1000 VIEWS:", countStatus("BELOW_THRESHOLD"));
-    console.log("DUPLICATES:", countStatus("DUPLICATE"));
+    const unique = new Map();
+
+    for (const row of qualifying) {
+      if (!row.id) continue;
+
+      if (!unique.has(row.id)) {
+        unique.set(row.id, {
+          id: row.id,
+          title: row.title,
+          reportedViews: row.views,
+          searches: [row.search],
+          youtubeUrl:
+            "https://www.youtube.com/watch?v=" +
+            row.id,
+          verification: "UNVERIFIED"
+        });
+      } else {
+        const existing = unique.get(row.id);
+
+        existing.reportedViews = Math.max(
+          existing.reportedViews,
+          row.views
+        );
+
+        if (!existing.searches.includes(row.search)) {
+          existing.searches.push(row.search);
+        }
+      }
+    }
+
+    const unresolved = qualifying.filter(
+      row => !row.id
+    );
+
+    const count = unique.size;
+
+    // An F requires a successful search and sufficient
+    // identification coverage. Otherwise use N/A.
+    const completeEnough =
+      successfulSearches === SEARCHES.length &&
+      observations.length > 0 &&
+      unresolved.length === 0;
+
+    const provisionalGrade = completeEnough
+      ? grade(count)
+      : "N/A";
+
+    const result = {
+      engine: 3,
+      test: 24,
+      query: BASE_QUERY,
+      grade: provisionalGrade,
+      gradeStatus:
+        completeEnough
+          ? "PROVISIONAL"
+          : "INSUFFICIENT_DATA",
+      gradingSource:
+        "Bing-reported view counts",
+      minimumViews: MIN_VIEWS,
+      uniqueQualifyingCandidates: count,
+      independentlyVerified: 0,
+      unresolvedQualifyingCards: unresolved.length,
+      successfulSearches,
+      totalSearches: SEARCHES.length,
+      candidates: [...unique.values()]
+    };
+
+    console.log("\n==============================");
+    console.log("TEST #24 — GRADING SUMMARY");
+    console.log("==============================");
+
+    console.log(
+      "SEARCHES COMPLETED:",
+      successfulSearches,
+      "OF",
+      SEARCHES.length
+    );
+
+    console.log(
+      "TOTAL CARD OBSERVATIONS:",
+      observations.length
+    );
+
+    console.log(
+      "CARDS WITH VIEW COUNTS:",
+      withViews.length
+    );
+
+    console.log(
+      "CARDS WITH 1000+ VIEWS:",
+      qualifying.length
+    );
+
+    console.log(
+      "DISTINCT YOUTUBE ID CANDIDATES:",
+      count
+    );
+
+    console.log(
+      "UNRESOLVED QUALIFYING CARDS:",
+      unresolved.length
+    );
+
+    console.log(
+      "INDEPENDENTLY VERIFIED:",
+      0
+    );
+
+    console.log(
+      "PROVISIONAL GRADE:",
+      provisionalGrade
+    );
+
+    console.log(
+      "GRADE STATUS:",
+      result.gradeStatus
+    );
+
+    console.log(
+      "\nGRADING RESULT:",
+      JSON.stringify(result, null, 2)
+    );
 
     console.log("\nFINAL STATUS");
 
-    const allVerified =
-      results.length > 0 &&
-      results.every(r => r.status === "VERIFIED");
-
-    if (allVerified) {
+    if (completeEnough) {
       console.log(
-        "ALL INPUT CANDIDATES VERIFIED."
-      );
-      console.log(
-        "NOTE: Search completeness and grading still require testing."
+        "TEST #24 PASSED — PROVISIONAL GRADING CALCULATED."
       );
     } else {
       console.log(
-        "VERIFICATION INCOMPLETE — REVIEW RESULTS."
-      );
-      console.log(
-        "DO NOT ACTIVATE A-F GRADING."
+        "TEST #24 INCOMPLETE — GRADE N/A."
       );
     }
 
     console.log(
-      "TEST #23 FINISHED — BLOGGER AND ENGINES 1/2 UNCHANGED."
+      "TEST #25 STILL REQUIRED FOR INDEPENDENT VERIFICATION."
     );
 
-    // Diagnostic run: exit successfully if the checks completed.
-    // The VERIFICATION SUMMARY, not the green icon,
-    // determines whether the data passed.
+    console.log(
+      "BLOGGER AND ENGINES 1/2 UNCHANGED."
+    );
+
   } finally {
     await browser.close();
   }
 })().catch(error => {
-  console.error("TEST #23 ERROR:", error);
+  console.error(
+    "ENGINE 3 TEST #24 ERROR:",
+    error
+  );
   process.exitCode = 1;
 });
