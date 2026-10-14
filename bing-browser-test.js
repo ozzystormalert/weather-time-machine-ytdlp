@@ -3,92 +3,80 @@
 
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #24 CORRECTED
-// Provisional A-F grading with relevance filtering.
-// No changes to Blogger, Engines 1/2, or verified grades.
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #24B
+// Candidate recovery only. No A-F grades generated.
 
 const BASE_QUERY =
   process.env.WEATHER_QUERY ||
   "hurricane sandy 2012 new jersey news";
 
 const MIN_VIEWS = 1000;
-
-const ROOT_QUERY = BASE_QUERY
-  .replace(/\s+news\s*$/i, "")
-  .trim();
+const ROOT = BASE_QUERY.replace(/\s+news\s*$/i, "").trim();
 
 const SEARCHES = [...new Set([
   BASE_QUERY,
-  ROOT_QUERY + " footage",
-  ROOT_QUERY + " youtube",
-  ROOT_QUERY + " local news"
+  ROOT + " footage",
+  ROOT + " youtube",
+  ROOT + " local news"
 ])];
 
-// Provisional grading thresholds.
-function grade(count) {
-  if (count >= 20) return "A";
-  if (count >= 15) return "B";
-  if (count >= 10) return "C";
-  if (count >= 5) return "D";
-  return "F";
-}
-
-function parseViews(value) {
-  const match = String(value || "").match(
-    /\b(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
+function parseViews(text) {
+  const m = String(text || "").match(
+    /(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
   );
+  if (!m) return null;
 
-  if (!match) return null;
-
-  const number = Number(match[1].replace(/,/g, ""));
+  const number = Number(m[1].replace(/,/g, ""));
   const multiplier = {
     K: 1000,
     M: 1000000,
     B: 1000000000
-  }[(match[2] || "").toUpperCase()] || 1;
+  }[(m[2] || "").toUpperCase()] || 1;
 
   return Number.isFinite(number)
     ? Math.round(number * multiplier)
     : null;
 }
 
-function decode(value) {
-  let result = String(value || "");
+function decode(raw) {
+  let text = String(raw || "");
 
-  for (let i = 0; i < 5; i++) {
-    const previous = result;
+  for (let i = 0; i < 4; i++) {
+    const previous = text;
 
-    result = result
-      .replace(/&amp;|&#38;/gi, "&")
+    text = text
       .replace(/&quot;|&#34;/gi, '"')
+      .replace(/&amp;|&#38;/gi, "&")
+      .replace(/&#39;|&apos;/gi, "'")
       .replace(/\\u0026/gi, "&")
       .replace(/\\u003d/gi, "=")
       .replace(/\\u002f/gi, "/")
       .replace(/\\\//g, "/");
 
     try {
-      result = decodeURIComponent(result);
+      text = decodeURIComponent(text);
     } catch (_) {}
 
-    if (result === previous) break;
+    if (text === previous) break;
   }
 
-  return result;
+  return text;
 }
 
-function youtubeIds(value) {
-  const source = decode(value);
+function youtubeIds(raw) {
+  const text = decode(raw);
   const ids = new Set();
 
   const patterns = [
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?[?&]v=([A-Za-z0-9_-]{11})/gi,
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?v=([A-Za-z0-9_-]{11})/gi,
-    /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
-    /youtube(?:-nocookie)?\.com\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/gi
+    /youtube\.com\/watch\?v=([\w-]{11})/gi,
+    /youtube\.com\/watch\?[^\s"'<>]*?[?&]v=([\w-]{11})/gi,
+    /youtu\.be\/([\w-]{11})/gi,
+    /youtube(?:-nocookie)?\.com\/(?:embed|shorts|live)\/([\w-]{11})/gi,
+    /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([\w-]{11})["']/gi
   ];
 
   for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
+    for (const match of text.matchAll(pattern)) {
       ids.add(match[1]);
     }
   }
@@ -96,134 +84,237 @@ function youtubeIds(value) {
   return [...ids];
 }
 
-// Test #24 event relevance rules.
-// These rules are specific to Hurricane Sandy in New Jersey.
-// Other events must be configured separately.
 function relevance(title) {
-  const text = String(title || "").toLowerCase();
+  const t = String(title || "").toLowerCase();
 
-  const event =
-    /\b(sandy|superstorm)\b/.test(text);
+  const event = /\b(sandy|superstorm)\b/.test(t);
 
   const place =
-    /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(text);
+    /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(t);
 
   const weather =
-    /\b(hurricane|storm surge|coastal flooding|flooding|evacuation|landfall)\b/.test(text);
-
-  const year =
-    /\b2012\b/.test(text);
-
-  const strict =
-    event && (place || year);
-
-  const broad =
-    event || (weather && place);
+    /\b(hurricane|storm|surge|flooding|flood|evacuation|landfall|weather)\b/.test(t);
 
   return {
-    strict,
-    broad,
-    category: strict
-      ? "STRICT"
-      : broad
-        ? "BROAD"
-        : "EXCLUDED"
+    event,
+    place,
+    weather,
+    strict: event && (place || /\b2012\b/.test(t)),
+    broad: event || (weather && place)
   };
 }
 
 async function extract(page) {
   return page.evaluate(() => {
-    const nodes = [
+    const cards = [
       ...document.querySelectorAll(".mc_vtvc.b_canvas")
     ];
 
-    const viewPattern =
-      /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
+    const viewRegex =
+      /\d[\d,.]*\s*[KMB]?\s*views?\b/i;
 
-    return nodes.map((node, index) => {
-      const titleElement = node.querySelector(
-        ".mc_vtvc_title, [class*='title'], a[title]"
-      );
+    return cards.map((card, index) => {
+      const titleElements = [
+        ...card.querySelectorAll(
+          ".mc_vtvc_title, a[title], [class*='title']"
+        )
+      ];
 
-      const title = (
-        titleElement?.getAttribute("title") ||
-        titleElement?.innerText ||
-        node.getAttribute("aria-label") ||
-        ""
-      ).trim();
+      const titles = [...new Set(
+        titleElements.map(el =>
+          (
+            el.getAttribute("title") ||
+            el.innerText ||
+            el.textContent ||
+            ""
+          ).trim()
+        ).filter(Boolean)
+      )];
 
-      const text = (node.innerText || "").trim();
+      const text = (card.innerText || "").trim();
 
       const labels = [
-        ...node.querySelectorAll("*")
-      ].filter(element => {
-        const ownText =
-          (element.innerText || "").trim();
+        ...card.querySelectorAll("*")
+      ].filter(el => {
+        const value = (el.innerText || "").trim();
 
-        return viewPattern.test(ownText) &&
-          ![...element.children].some(child =>
-            viewPattern.test(
+        return viewRegex.test(value) &&
+          ![...el.children].some(child =>
+            viewRegex.test(
               (child.innerText || "").trim()
             )
           );
-      }).map(element =>
-        (element.innerText || "")
-          .match(viewPattern)?.[0]
+      }).map(el =>
+        (el.innerText || "").match(viewRegex)?.[0]
       ).filter(Boolean);
 
-      const evidence = [];
+      const attributes = [];
 
       for (const element of [
-        node,
-        ...node.querySelectorAll(
+        card,
+        ...card.querySelectorAll(
           "[mmeta], [vrhdata], [ourl], [href], [data-mmeta]"
         )
       ]) {
-        for (const attribute of element.attributes || []) {
+        for (const attr of element.attributes || []) {
           if (
             /mmeta|vrhdata|ourl|href|video|media|url|data-id/i
-              .test(attribute.name)
+              .test(attr.name)
           ) {
-            evidence.push(attribute.value);
+            attributes.push({
+              name: attr.name,
+              value: attr.value.slice(0, 5000)
+            });
           }
         }
       }
 
       return {
         index,
-        title: title.slice(0, 250),
-        label:
+        title: (
+          titles[0] ||
+          card.getAttribute("aria-label") ||
+          ""
+        ).slice(0, 250),
+        alternateTitles: titles.slice(1, 4),
+        viewLabel:
           labels[0] ||
-          text.match(viewPattern)?.[0] ||
+          text.match(viewRegex)?.[0] ||
           "",
-        evidence
+        textSample: text.slice(0, 400),
+        attributes: attributes.slice(0, 60),
+        links: [
+          ...card.querySelectorAll("a[href]")
+        ].map(a => a.href).slice(0, 12),
+        htmlSample: card.outerHTML.slice(0, 18000)
       };
     });
   });
 }
 
 function identify(card) {
-  const ids = new Set();
-
-  for (const value of card.evidence) {
-    for (const id of youtubeIds(value)) {
-      ids.add(id);
+  const sources = [
+    ...card.attributes.map(a => ({
+      source: a.name,
+      value: a.value
+    })),
+    ...card.links.map(url => ({
+      source: "link",
+      value: url
+    })),
+    {
+      source: "html",
+      value: card.htmlSample
     }
+  ];
+
+  const evidence = sources.map(item => ({
+    source: item.source,
+    ids: youtubeIds(item.value)
+  })).filter(item => item.ids.length > 0);
+
+  const ids = [...new Set(
+    evidence.flatMap(item => item.ids)
+  )];
+
+  const primarySources = sources.filter(item =>
+    /^(mmeta|data-mmeta|ourl|href|vrhdata)$/i
+      .test(item.source)
+  );
+
+  const primaryIds = [...new Set(
+    primarySources.flatMap(item =>
+      youtubeIds(item.value)
+    )
+  )];
+
+  let id = null;
+
+  if (primaryIds.length === 1) {
+    id = primaryIds[0];
+  } else if (
+    primaryIds.length === 0 &&
+    ids.length === 1
+  ) {
+    id = ids[0];
   }
 
-  const candidates = [...ids];
+  return {
+    id,
+    possibleIds: ids,
+    idStatus: id
+      ? ids.length > 1
+        ? "PRIMARY_ID_OTHER_IDS_PRESENT"
+        : "SINGLE_ID"
+      : ids.length > 1
+        ? "AMBIGUOUS_IDS"
+        : "MISSING_YOUTUBE_ID",
+    evidenceSources: evidence
+      .map(item => item.source)
+      .slice(0, 12)
+  };
+}
+
+function diagnose(card, search) {
+  const identity = identify(card);
+  const views = parseViews(card.viewLabel);
+  const match = relevance(card.title);
+
+  const reasons = [];
+
+  if (!card.title) {
+    reasons.push("MISSING_TITLE");
+  }
+
+  if (views === null) {
+    reasons.push("MISSING_VIEW_COUNT");
+  } else if (views < MIN_VIEWS) {
+    reasons.push("BELOW_1000_VIEWS");
+  }
+
+  if (!match.broad) {
+    reasons.push("TITLE_NOT_BROAD_WEATHER_MATCH");
+  }
+
+  if (!match.strict) {
+    reasons.push("TITLE_NOT_STRICT_EVENT_PLACE_MATCH");
+  }
+
+  if (!identity.id) {
+    reasons.push(identity.idStatus);
+  }
+
+  if (
+    identity.idStatus ===
+    "PRIMARY_ID_OTHER_IDS_PRESENT"
+  ) {
+    reasons.push("MULTIPLE_IDS_REQUIRE_REVIEW");
+  }
+
+  const candidate =
+    views !== null &&
+    views >= MIN_VIEWS &&
+    match.broad &&
+    Boolean(identity.id);
 
   return {
-    id: candidates.length === 1
-      ? candidates[0]
+    search,
+    index: card.index,
+    title: card.title,
+    alternateTitles: card.alternateTitles,
+    viewLabel: card.viewLabel,
+    views,
+    ...identity,
+    relevance: match,
+    candidate,
+    reasons: reasons.length
+      ? reasons
+      : ["CANDIDATE_NOT_INDEPENDENTLY_VERIFIED"],
+    youtubeUrl: identity.id
+      ? "https://www.youtube.com/watch?v=" +
+        identity.id
       : null,
-    candidates,
-    identityStatus:
-      candidates.length === 1
-        ? "BING_ID_CANDIDATE"
-        : candidates.length > 1
-          ? "AMBIGUOUS"
-          : "MISSING"
+    textSample: card.textSample
   };
 }
 
@@ -241,13 +332,14 @@ function identify(card) {
       locale: "en-US"
     });
 
-    const observations = [];
+    const all = [];
     let successfulSearches = 0;
 
     console.log(
-      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24 CORRECTED"
+      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24B"
     );
-    console.log("EVENT QUERY:", BASE_QUERY);
+    console.log("CANDIDATE RECOVERY DIAGNOSTIC");
+    console.log("QUERY:", BASE_QUERY);
     console.log("MINIMUM VIEWS:", MIN_VIEWS);
 
     for (let i = 0; i < SEARCHES.length; i++) {
@@ -287,21 +379,12 @@ function identify(card) {
         const cards = await extract(page);
 
         console.log(
-          "BING CARDS:",
+          "BING CARDS EXTRACTED:",
           cards.length
         );
 
         for (const card of cards) {
-          const identity = identify(card);
-
-          observations.push({
-            search: i + 1,
-            title: card.title,
-            views: parseViews(card.label),
-            viewLabel: card.label,
-            relevance: relevance(card.title),
-            ...identity
-          });
+          all.push(diagnose(card, i + 1));
         }
       } catch (error) {
         console.log(
@@ -311,100 +394,44 @@ function identify(card) {
       }
     }
 
-    const withViews = observations.filter(
-      row => row.views !== null
+    const withViews = all.filter(row =>
+      row.views !== null
     );
 
-    const qualifying = withViews.filter(
-      row => row.views >= MIN_VIEWS
+    const qualifying = withViews.filter(row =>
+      row.views >= MIN_VIEWS
     );
 
-    const relevant = qualifying.filter(
-      row => row.relevance.broad
+    const broad = qualifying.filter(row =>
+      row.relevance.broad
     );
 
-    const excluded = qualifying.filter(
-      row => !row.relevance.broad
-    );
-
-    const unresolved = relevant.filter(
-      row => !row.id
+    const candidates = broad.filter(row =>
+      row.id
     );
 
     const unique = new Map();
 
-    for (const row of relevant) {
-      if (!row.id) continue;
-
+    for (const row of candidates) {
       if (!unique.has(row.id)) {
-        unique.set(row.id, {
-          id: row.id,
-          title: row.title,
-          reportedViews: row.views,
-          relevance: row.relevance.category,
-          searches: [row.search],
-          youtubeUrl:
-            "https://www.youtube.com/watch?v=" +
-            row.id,
-          verification: "UNVERIFIED"
-        });
-      } else {
-        const existing = unique.get(row.id);
-
-        existing.reportedViews = Math.max(
-          existing.reportedViews,
-          row.views
-        );
-
-        if (!existing.searches.includes(row.search)) {
-          existing.searches.push(row.search);
-        }
-
-        if (row.relevance.strict) {
-          existing.relevance = "STRICT";
-        }
+        unique.set(row.id, row);
       }
     }
 
-    const count = unique.size;
+    const duplicates = candidates.filter(row =>
+      unique.get(row.id) !== row
+    );
 
-    // Unresolved relevant cards are reported as uncertainty.
-    // They do not automatically suppress the provisional grade.
-    // No F is assigned if zero candidates were identified.
-    const sufficientData =
-      successfulSearches === SEARCHES.length &&
-      count > 0;
-
-    const provisionalGrade = sufficientData
-      ? grade(count)
-      : "N/A";
-
-    const result = {
-      engine: 3,
-      test: 24,
-      query: BASE_QUERY,
-      provisionalGrade,
-      gradeStatus: sufficientData
-        ? "PROVISIONAL_UNVERIFIED"
-        : "INSUFFICIENT_DATA",
-      gradingSource:
-        "Bing-reported video views",
-      minimumViews: MIN_VIEWS,
-      uniqueRelevantCandidates: count,
-      unresolvedRelevantCards: unresolved.length,
-      excludedCardObservations: excluded.length,
-      independentlyVerified: 0,
-      successfulSearches,
-      totalSearches: SEARCHES.length,
-      candidates: [...unique.values()]
-    };
-
-    console.log("\n================================");
-    console.log("TEST #24 — CORRECTED GRADING SUMMARY");
-    console.log("================================");
+    const excluded = qualifying.filter(row =>
+      !row.candidate
+    );
 
     console.log(
-      "SEARCHES COMPLETED:",
+      "\n========== TEST #24B SUMMARY =========="
+    );
+
+    console.log(
+      "SUCCESSFUL SEARCHES:",
       successfulSearches,
       "OF",
       SEARCHES.length
@@ -412,7 +439,12 @@ function identify(card) {
 
     console.log(
       "TOTAL CARD OBSERVATIONS:",
-      observations.length
+      all.length
+    );
+
+    console.log(
+      "CARDS WITH VIEW COUNTS:",
+      withViews.length
     );
 
     console.log(
@@ -421,71 +453,91 @@ function identify(card) {
     );
 
     console.log(
-      "RELEVANT 1000+ CARD OBSERVATIONS:",
-      relevant.length
+      "BROAD WEATHER MATCHES:",
+      broad.length
     );
 
     console.log(
-      "EXCLUDED CARD OBSERVATIONS:",
+      "RECOVERED DISTINCT YOUTUBE IDS:",
+      unique.size
+    );
+
+    console.log(
+      "DUPLICATE CANDIDATE OBSERVATIONS:",
+      duplicates.length
+    );
+
+    console.log(
+      "BROAD MATCHES MISSING ID:",
+      broad.filter(row => !row.id).length
+    );
+
+    console.log(
+      "EXCLUDED 1000+ OBSERVATIONS:",
       excluded.length
     );
 
     console.log(
-      "DISTINCT RELEVANT YOUTUBE ID CANDIDATES:",
-      count
+      "\nRECOVERED CANDIDATES:",
+      JSON.stringify(
+        [...unique.values()],
+        null,
+        2
+      )
     );
 
     console.log(
-      "UNRESOLVED RELEVANT CARDS:",
-      unresolved.length
+      "\nEXCLUDED 1000+ CARDS AND REASONS:",
+      JSON.stringify(
+        excluded,
+        null,
+        2
+      )
     );
 
     console.log(
-      "INDEPENDENTLY VERIFIED:",
-      0
+      "\nDUPLICATE RECORDS:",
+      JSON.stringify(
+        duplicates,
+        null,
+        2
+      )
     );
 
     console.log(
-      "PROVISIONAL GRADE:",
-      provisionalGrade
-    );
-
-    console.log(
-      "GRADE STATUS:",
-      result.gradeStatus
-    );
-
-    console.log(
-      "\nGRADING RESULT:",
-      JSON.stringify(result, null, 2)
+      "\nALL CARD DIAGNOSTICS:",
+      JSON.stringify(
+        all,
+        null,
+        2
+      )
     );
 
     console.log("\nFINAL STATUS");
-
-    if (sufficientData) {
-      console.log(
-        "TEST #24 COMPLETED — PROVISIONAL A-F GRADE CALCULATED."
-      );
-    } else {
-      console.log(
-        "TEST #24 INCOMPLETE — INSUFFICIENT RELEVANT DATA."
-      );
-    }
-
     console.log(
-      "TEST #25 REQUIRED — INDEPENDENT VIDEO VERIFICATION."
+      "TEST #24B COMPLETED — DIAGNOSTIC ONLY."
     );
-
+    console.log(
+      "NO A-F GRADES GENERATED."
+    );
+    console.log(
+      "VIDEO IDS AND VIEW COUNTS NOT INDEPENDENTLY VERIFIED."
+    );
     console.log(
       "BLOGGER AND ENGINES 1/2 UNCHANGED."
     );
 
+    if (!successfulSearches) {
+      process.exitCode = 1;
+    }
+
   } finally {
     await browser.close();
   }
+
 })().catch(error => {
   console.error(
-    "ENGINE 3 TEST #24 ERROR:",
+    "ENGINE 3 TEST #24B ERROR:",
     error
   );
   process.exitCode = 1;
