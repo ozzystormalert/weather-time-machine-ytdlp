@@ -1,42 +1,62 @@
 
 "use strict";
-
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #24C
-// YOUTUBE-ONLY CANDIDATE RECOVERY
-// Diagnostic only: no A-F grades, no Blogger changes.
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #24E
+// Search recovery and evidence-based relevance diagnosis.
+// No A-F grading. No changes to Blogger or Engines 1/2.
 
-const BASE_QUERY =
+const QUERY =
   process.env.WEATHER_QUERY ||
   "hurricane sandy 2012 new jersey news";
 
 const MIN_VIEWS = 1000;
-const ROOT = BASE_QUERY.replace(/\s+news\s*$/i, "").trim();
 
-const SEARCHES = [...new Set([
-  ROOT + " news site:youtube.com",
-  ROOT + " footage site:youtube.com",
-  ROOT + " youtube site:youtube.com",
-  ROOT + " local news site:youtube.com"
-])];
+const ROOT = QUERY
+  .replace(/\s+news\s*$/i, "")
+  .trim();
 
-function parseViews(text) {
-  const m = String(text || "").match(
-    /(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
+const SEARCHES = [
+  {
+    kind: "videos",
+    q: `${ROOT} news site:youtube.com`
+  },
+  {
+    kind: "videos",
+    q: `${ROOT} footage site:youtube.com`
+  },
+  {
+    kind: "web",
+    q: `${ROOT} site:youtube.com/watch`
+  },
+  {
+    kind: "web",
+    q: `${ROOT} local news site:youtube.com/watch`
+  }
+];
+
+const sleep = ms =>
+  new Promise(resolve => setTimeout(resolve, ms));
+
+function parseViews(value) {
+  const match = String(value || "").match(
+    /\b(\d[\d,.]*)\s*([KMB])?\s*views?\b/i
   );
 
-  if (!m) return null;
+  if (!match) return null;
 
-  const n = Number(m[1].replace(/,/g, ""));
-  const factor = {
+  const number = Number(
+    match[1].replace(/,/g, "")
+  );
+
+  const multiplier = {
     K: 1000,
     M: 1000000,
     B: 1000000000
-  }[(m[2] || "").toUpperCase()] || 1;
+  }[(match[2] || "").toUpperCase()] || 1;
 
-  return Number.isFinite(n)
-    ? Math.round(n * factor)
+  return Number.isFinite(number)
+    ? Math.round(number * multiplier)
     : null;
 }
 
@@ -44,12 +64,11 @@ function decode(raw) {
   let text = String(raw || "");
 
   for (let i = 0; i < 4; i++) {
-    const old = text;
+    const previous = text;
 
     text = text
       .replace(/&amp;|&#38;/gi, "&")
       .replace(/&quot;|&#34;/gi, '"')
-      .replace(/&#39;|&apos;/gi, "'")
       .replace(/\\u0026/gi, "&")
       .replace(/\\u003d/gi, "=")
       .replace(/\\u002f/gi, "/")
@@ -59,253 +78,249 @@ function decode(raw) {
       text = decodeURIComponent(text);
     } catch (_) {}
 
-    if (old === text) break;
+    if (text === previous) break;
   }
 
   return text;
 }
 
-function youtubeIds(raw) {
+function idsIn(raw) {
   const text = decode(raw);
   const ids = new Set();
 
   const patterns = [
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?[?&]v=([\w-]{11})(?![\w-])/gi,
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?v=([\w-]{11})(?![\w-])/gi,
-    /youtu\.be\/([\w-]{11})(?![\w-])/gi,
-    /youtube(?:-nocookie)?\.com\/(?:shorts|embed|live)\/([\w-]{11})(?![\w-])/gi,
-    /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([\w-]{11})["']/gi
+    /(?:https?:\/\/)?(?:www\.|m\.)?youtube\.com\/watch\?[^\s"'<>]*?\bv=([\w-]{11})(?![\w-])/gi,
+
+    /(?:https?:\/\/)?youtu\.be\/([\w-]{11})(?![\w-])/gi,
+
+    /(?:https?:\/\/)?(?:www\.)?youtube\.com\/(?:shorts|live|embed)\/([\w-]{11})(?![\w-])/gi
   ];
 
   for (const pattern of patterns) {
-    for (const m of text.matchAll(pattern)) {
-      ids.add(m[1]);
+    for (const match of text.matchAll(pattern)) {
+      ids.add(match[1]);
     }
   }
 
   return [...ids];
 }
 
-function relevance(title) {
-  const t = String(title || "").toLowerCase();
+function eventCheck(title) {
+  const text = String(title || "").toLowerCase();
 
-  const event = /\b(sandy|superstorm)\b/.test(t);
+  // Diagnostic rules for Hurricane Sandy 2012.
+  // Other weather events require their own relevance rules.
 
-  const place =
-    /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(t);
+  const sandy =
+    /\b(sandy|superstorm)\b/.test(text);
 
-  const weather =
-    /\b(hurricane|storm|surge|flood|flooding|evacuation|landfall)\b/.test(t);
+  const nj =
+    /\b(new jersey|jersey shore|\bnj\b|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(text);
+
+  const context =
+    /\b(2012|hurricane|storm|flood|surge|aftermath|coast|damage|news|coverage|satellite)\b/.test(text);
 
   return {
-    event,
-    place,
-    weather,
-    strict: event && (place || /\b2012\b/.test(t)),
-    broad: event || (weather && place)
+    sandy,
+    nj,
+    context,
+
+    relevant:
+      sandy && (nj || context),
+
+    review:
+      sandy && !nj && !context
   };
 }
 
-async function extract(page) {
-  return page.evaluate(() => {
-    const nodes = [
-      ...document.querySelectorAll(".mc_vtvc.b_canvas")
-    ];
+async function extract(page, kind) {
+  return page.evaluate(kind => {
+    const selectors =
+      kind === "videos"
+        ? [
+            ".mc_vtvc.b_canvas",
+            ".mc_vtvc"
+          ]
+        : [
+            "li.b_algo",
+            ".b_algo"
+          ];
 
-    const viewRegex =
-      /\d[\d,.]*\s*[KMB]?\s*views?\b/i;
+    let nodes = [];
 
-    return nodes.map((node, index) => {
-      const titleElement = node.querySelector(
-        ".mc_vtvc_title, a[title], [class*='title']"
+    for (const selector of selectors) {
+      nodes = [
+        ...document.querySelectorAll(selector)
+      ];
+
+      if (nodes.length) break;
+    }
+
+    return nodes.map((element, index) => {
+      const heading = element.querySelector(
+        kind === "web"
+          ? "h2 a, h2"
+          : ".mc_vtvc_title, a[title], [class*='title']"
       );
 
       const title = (
-        titleElement?.getAttribute("title") ||
-        titleElement?.innerText ||
-        node.getAttribute("aria-label") ||
+        heading?.getAttribute("title") ||
+        heading?.textContent ||
+        element.getAttribute("aria-label") ||
         ""
-      ).trim();
+      )
+        .trim()
+        .slice(0, 250);
 
-      const text = (node.innerText || "").trim();
-
-      const labels = [
-        ...node.querySelectorAll("*")
-      ].filter(el => {
-        const ownText = (el.innerText || "").trim();
-
-        return viewRegex.test(ownText) &&
-          ![...el.children].some(child =>
-            viewRegex.test((child.innerText || "").trim())
-          );
-      }).map(el =>
-        (el.innerText || "").match(viewRegex)?.[0]
-      ).filter(Boolean);
+      const text = (
+        element.innerText || ""
+      ).slice(0, 1000);
 
       const links = [
-        ...node.querySelectorAll("a[href]")
-      ].map(a => ({
-        href: a.getAttribute("href") || "",
-        text: (a.innerText || "").slice(0, 120)
-      }));
-
-      const metadata = [
-        ...node.querySelectorAll("[mmeta], [data-mmeta]")
-      ].map(el => ({
-        mmeta: el.getAttribute("mmeta") || "",
-        dataMmeta: el.getAttribute("data-mmeta") || ""
-      }));
+        ...element.querySelectorAll("a[href]")
+      ]
+        .map(link =>
+          link.getAttribute("href") || ""
+        )
+        .slice(0, 30);
 
       const attributes = [];
 
-      for (const element of [
-        node,
-        ...node.querySelectorAll(
-          "[ourl], [vrhdata], [href], [mmeta]"
+      const metadataElements = [
+        element,
+        ...element.querySelectorAll(
+          "[mmeta],[data-mmeta],[ourl],[vrhdata],[data-url]"
         )
-      ]) {
-        for (const attr of element.attributes || []) {
-          if (/ourl|vrhdata|href|mmeta|url/i.test(attr.name)) {
-            attributes.push({
-              name: attr.name,
-              value: attr.value.slice(0, 5000)
-            });
+      ];
+
+      for (const node of metadataElements) {
+        for (const attribute of node.attributes || []) {
+          if (
+            /href|url|mmeta|vrhdata|ourl/i.test(
+              attribute.name
+            )
+          ) {
+            attributes.push(
+              attribute.value.slice(0, 6000)
+            );
           }
         }
       }
 
       return {
         index,
-        title: title.slice(0, 250),
-        viewLabel:
-          labels[0] ||
-          text.match(viewRegex)?.[0] ||
-          "",
-        textSample: text.slice(0, 350),
-        links: links.slice(0, 20),
-        metadata: metadata.slice(0, 10),
-        attributes: attributes.slice(0, 50)
+        title,
+        text,
+        links,
+        attrs: attributes
       };
     });
-  });
+  }, kind);
 }
 
-function identify(card) {
-  const directLinks = card.links.flatMap(link =>
-    youtubeIds(link.href)
+function inspect(card, search) {
+  const direct = [
+    ...new Set(
+      card.links.flatMap(idsIn)
+    )
+  ];
+
+  const metadata = [
+    ...new Set(
+      card.attrs.flatMap(idsIn)
+    )
+  ];
+
+  const ids = [
+    ...new Set([
+      ...direct,
+      ...metadata
+    ])
+  ];
+
+  const id =
+    direct.length === 1
+      ? direct[0]
+      : direct.length === 0 &&
+        metadata.length === 1
+        ? metadata[0]
+        : null;
+
+  const viewMatch = card.text.match(
+    /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i
   );
 
-  const metaValues = card.metadata.flatMap(item => [
-    item.mmeta,
-    item.dataMmeta
-  ]);
+  const viewLabel =
+    viewMatch ? viewMatch[0] : null;
 
-  const metaIds = metaValues.flatMap(youtubeIds);
+  const views = parseViews(viewLabel);
 
-  const attributeIds = card.attributes.flatMap(item =>
-    youtubeIds(item.value)
-  );
+  const relevance = eventCheck(card.title);
 
-  const allIds = [...new Set([
-    ...directLinks,
-    ...metaIds,
-    ...attributeIds
-  ])];
-
-  const directUnique = [...new Set(directLinks)];
-  const metaUnique = [...new Set(metaIds)];
-
-  let id = null;
-  let evidence = "NONE";
-
-  if (directUnique.length === 1) {
-    id = directUnique[0];
-    evidence = "DIRECT_YOUTUBE_LINK";
-  } else if (
-    directUnique.length === 0 &&
-    metaUnique.length === 1
-  ) {
-    id = metaUnique[0];
-    evidence = "BING_METADATA";
-  } else if (
-    directUnique.length === 0 &&
-    metaUnique.length === 0 &&
-    allIds.length === 1
-  ) {
-    id = allIds[0];
-    evidence = "CARD_ATTRIBUTE";
-  }
-
-  const ambiguous =
-    directUnique.length > 1 ||
-    (directUnique.length === 0 && metaUnique.length > 1);
-
-  if (ambiguous) {
-    id = null;
-    evidence = "AMBIGUOUS";
-  }
-
-  return {
-    id,
-    evidence,
-    possibleIds: allIds,
-    ambiguous,
-    youtubeUrl: id
-      ? "https://www.youtube.com/watch?v=" + id
-      : null
-  };
-}
-
-function inspect(card, searchNumber) {
-  const identity = identify(card);
-  const views = parseViews(card.viewLabel);
-  const match = relevance(card.title);
   const reasons = [];
 
-  if (!card.title) reasons.push("MISSING_TITLE");
+  if (!card.title) {
+    reasons.push("MISSING_TITLE");
+  }
+
+  if (!id) {
+    reasons.push(
+      ids.length > 1
+        ? "AMBIGUOUS_YOUTUBE_IDS"
+        : "MISSING_YOUTUBE_ID"
+    );
+  }
+
+  if (!relevance.relevant) {
+    reasons.push(
+      relevance.review
+        ? "EVENT_TITLE_REQUIRES_REVIEW"
+        : "TITLE_NOT_EVENT_MATCH"
+    );
+  }
 
   if (views === null) {
-    reasons.push("MISSING_VIEW_COUNT");
+    reasons.push("VIEW_COUNT_UNAVAILABLE");
   } else if (views < MIN_VIEWS) {
     reasons.push("BELOW_1000_VIEWS");
   }
 
-  if (!identity.id) {
-    reasons.push(
-      identity.ambiguous
-        ? "AMBIGUOUS_YOUTUBE_IDS"
-        : "NO_YOUTUBE_VIDEO_ID"
-    );
-  }
-
-  if (!match.broad) {
-    reasons.push("TITLE_NOT_WEATHER_MATCH");
-  }
-
-  if (!match.strict) {
-    reasons.push("NOT_STRICT_EVENT_PLACE_MATCH");
-  }
-
-  // The grading decision remains disabled.
-  // Broad relevance is recorded for diagnostic comparison.
   const candidate =
-    identity.id !== null &&
+    Boolean(id) &&
+    relevance.relevant &&
     views !== null &&
-    views >= MIN_VIEWS &&
-    match.broad;
+    views >= MIN_VIEWS;
 
   return {
-    search: searchNumber,
+    search: search.kind,
+    query: search.q,
     index: card.index,
     title: card.title,
-    viewLabel: card.viewLabel,
+    id,
+    possibleIds: ids,
+
+    identitySource:
+      direct.length === 1
+        ? "DIRECT_LINK"
+        : metadata.length === 1
+          ? "CARD_METADATA"
+          : "UNRESOLVED",
+
+    youtubeUrl: id
+      ? `https://www.youtube.com/watch?v=${id}`
+      : null,
+
+    viewLabel,
     reportedViews: views,
-    ...identity,
-    relevance: match,
+    relevance,
     candidate,
     reasons,
-    textSample: card.textSample,
-    linkSamples: card.links.slice(0, 5)
+
+    textSample:
+      card.text.slice(0, 300),
+
+    linkSamples:
+      card.links.slice(0, 5)
   };
 }
 
@@ -324,25 +339,28 @@ function inspect(card, searchNumber) {
     });
 
     const all = [];
-    let successfulSearches = 0;
+    let completed = 0;
 
     console.log(
-      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24C"
+      "WEATHER TIME MACHINE — ENGINE 3 — TEST #24E"
     );
-    console.log("YOUTUBE-ONLY CANDIDATE RECOVERY");
-    console.log("BASE QUERY:", BASE_QUERY);
-    console.log("MINIMUM VIEWS:", MIN_VIEWS);
 
-    for (let i = 0; i < SEARCHES.length; i++) {
-      const query = SEARCHES[i];
+    console.log(
+      "EVENT:",
+      QUERY,
+      "MINIMUM VIEWS:",
+      MIN_VIEWS
+    );
+
+    for (const search of SEARCHES) {
+      const endpoint =
+        search.kind === "videos"
+          ? "videos/search"
+          : "search";
+
       const url =
-        "https://www.bing.com/videos/search?q=" +
-        encodeURIComponent(query);
-
-      console.log(
-        "\nSEARCH", i + 1, "OF", SEARCHES.length
-      );
-      console.log("QUERY:", query);
+        `https://www.bing.com/${endpoint}?q=` +
+        encodeURIComponent(search.q);
 
       try {
         const response = await page.goto(url, {
@@ -350,142 +368,140 @@ function inspect(card, searchNumber) {
           timeout: 45000
         });
 
-        await page.waitForTimeout(4500);
+        await sleep(3500);
 
-        console.log(
-          "HTTP STATUS:",
-          response?.status()
+        const cards = await extract(
+          page,
+          search.kind
         );
 
-        if (!response || response.status() !== 200) {
+        const status = response?.status();
+
+        console.log(
+          "SEARCH:",
+          search.kind,
+          search.q,
+          "HTTP:",
+          status,
+          "CARDS:",
+          cards.length
+        );
+
+        if (status !== 200) {
           continue;
         }
 
-        successfulSearches++;
-
-        const cards = await extract(page);
-
-        console.log("BING CARDS:", cards.length);
+        completed++;
 
         for (const card of cards) {
-          all.push(inspect(card, i + 1));
+          all.push(inspect(card, search));
         }
+
       } catch (error) {
         console.log(
           "SEARCH ERROR:",
+          search.q,
           error.message
         );
       }
     }
 
-    const withViews = all.filter(r =>
-      r.reportedViews !== null
+    const relevant = all.filter(
+      row => row.relevance.relevant
     );
 
-    const qualifying = withViews.filter(r =>
-      r.reportedViews >= MIN_VIEWS
+    const identified = relevant.filter(
+      row => row.id
     );
 
-    const youtubeCandidates = qualifying.filter(r =>
-      r.id !== null
-    );
-
-    const relevant = youtubeCandidates.filter(r =>
-      r.relevance.broad
+    const eligible = identified.filter(
+      row =>
+        row.reportedViews !== null &&
+        row.reportedViews >= MIN_VIEWS
     );
 
     const unique = new Map();
 
-    for (const row of relevant) {
+    for (const row of eligible) {
       if (!unique.has(row.id)) {
         unique.set(row.id, {
           id: row.id,
           title: row.title,
           reportedViews: row.reportedViews,
-          youtubeUrl: row.youtubeUrl,
-          evidence: row.evidence,
-          searches: [row.search]
+          url: row.youtubeUrl,
+          queries: [row.query]
         });
+
       } else {
-        const existing = unique.get(row.id);
+        const previous = unique.get(row.id);
 
-        if (!existing.searches.includes(row.search)) {
-          existing.searches.push(row.search);
-        }
-
-        existing.reportedViews = Math.max(
-          existing.reportedViews,
+        previous.reportedViews = Math.max(
+          previous.reportedViews,
           row.reportedViews
         );
+
+        if (!previous.queries.includes(row.query)) {
+          previous.queries.push(row.query);
+        }
       }
     }
 
-    const excluded = qualifying.filter(r =>
-      !r.candidate
+    const missingViews = identified.filter(
+      row => row.reportedViews === null
     );
 
-    const unresolved = qualifying.filter(r =>
-      r.relevance.broad && !r.id
-    );
-
-    console.log(
-      "\n========== TEST #24C SUMMARY =========="
+    const review = all.filter(
+      row => row.relevance.review
     );
 
     console.log(
-      "SUCCESSFUL SEARCHES:",
-      successfulSearches,
+      "\n========== TEST #24E SUMMARY =========="
+    );
+
+    console.log(
+      "SEARCHES COMPLETED:",
+      completed,
       "OF",
       SEARCHES.length
     );
 
     console.log(
-      "TOTAL BING CARD OBSERVATIONS:",
+      "CARD OBSERVATIONS:",
       all.length
     );
 
     console.log(
-      "CARDS WITH VIEW COUNTS:",
-      withViews.length
-    );
-
-    console.log(
-      "CARDS WITH 1000+ VIEWS:",
-      qualifying.length
-    );
-
-    console.log(
-      "YOUTUBE-ID CANDIDATES WITH 1000+ VIEWS:",
-      youtubeCandidates.length
-    );
-
-    console.log(
-      "BROAD WEATHER YOUTUBE CANDIDATES:",
+      "EVENT-RELEVANT OBSERVATIONS:",
       relevant.length
     );
 
     console.log(
-      "DISTINCT BROAD-MATCH YOUTUBE IDS:",
+      "RELEVANT OBSERVATIONS WITH YOUTUBE IDS:",
+      identified.length
+    );
+
+    console.log(
+      "RELEVANT YOUTUBE IDS WITH MISSING VIEW COUNTS:",
+      missingViews.length
+    );
+
+    console.log(
+      "QUALIFYING OBSERVATIONS WITH 1000+ VIEWS:",
+      eligible.length
+    );
+
+    console.log(
+      "DISTINCT PROVISIONAL CANDIDATES:",
       unique.size
     );
 
     console.log(
-      "DUPLICATE CANDIDATE OBSERVATIONS:",
-      relevant.length - unique.size
+      "TITLES REQUIRING REVIEW:",
+      review.length
     );
 
     console.log(
-      "RELEVANT CARDS MISSING YOUTUBE ID:",
-      unresolved.length
-    );
-
-    console.log(
-      "EXCLUDED 1000+ CARD OBSERVATIONS:",
-      excluded.length
-    );
-
-    console.log(
-      "\nRECOVERED DISTINCT CANDIDATES:",
+      "\nDISTINCT PROVISIONAL CANDIDATES:",
       JSON.stringify(
         [...unique.values()],
         null,
@@ -494,39 +510,45 @@ function inspect(card, searchNumber) {
     );
 
     console.log(
-      "\nEXCLUDED CARDS WITH REASONS:",
-      JSON.stringify(excluded, null, 2)
+      "\nRELEVANT BUT VIEW COUNT UNKNOWN:",
+      JSON.stringify(
+        missingViews.slice(0, 30),
+        null,
+        2
+      )
     );
 
     console.log(
-      "\nUNRESOLVED RELEVANT CARDS:",
-      JSON.stringify(unresolved, null, 2)
+      "\nTITLES REQUIRING REVIEW:",
+      JSON.stringify(
+        review.slice(0, 30),
+        null,
+        2
+      )
     );
 
     console.log(
-      "\nALL SEARCH OBSERVATIONS:",
-      JSON.stringify(all, null, 2)
-    );
-
-    console.log("\nFINAL STATUS");
-
-    console.log(
-      "TEST #24C COMPLETED — DIAGNOSTIC ONLY."
-    );
-
-    console.log(
-      "NO A-F GRADES GENERATED."
+      "\nALL OBSERVATIONS WITH REASONS:",
+      JSON.stringify(
+        all,
+        null,
+        2
+      )
     );
 
     console.log(
-      "BING VIEW COUNTS ARE NOT INDEPENDENTLY VERIFIED."
+      "\nNO A-F GRADE GENERATED."
+    );
+
+    console.log(
+      "YOUTUBE IDS AND VIEW COUNTS NOT INDEPENDENTLY VERIFIED."
     );
 
     console.log(
       "BLOGGER AND ENGINES 1/2 UNCHANGED."
     );
 
-    if (!successfulSearches) {
+    if (!completed) {
       process.exitCode = 1;
     }
 
@@ -536,8 +558,9 @@ function inspect(card, searchNumber) {
 
 })().catch(error => {
   console.error(
-    "ENGINE 3 TEST #24C ERROR:",
+    "TEST #24E ERROR:",
     error
   );
+
   process.exitCode = 1;
 });
