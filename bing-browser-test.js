@@ -1,225 +1,224 @@
 
 "use strict";
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #16
-// Diagnostic only. Does not change Blogger, other engines, or grades.
 const { chromium } = require("playwright");
 
-const QUERY = process.env.WEATHER_QUERY || "joplin tornado 2011 missouri news";
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #17
+// Independent diagnostic only. Does not calculate or publish grades.
+const QUERY = process.env.WEATHER_QUERY || "hurricane sandy 2012 new jersey news";
 const MIN_VIEWS = 1000;
 const SEARCH_URL = "https://www.bing.com/videos/search?q=" + encodeURIComponent(QUERY);
 const ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
 function parseViews(value) {
-  const match = String(value || "").match(/(\d[\d,.]*)\s*([KMB])?\s*views?\b/i);
+  const match = String(value || "").match(/\b(\d[\d,.]*)\s*([KMB])?\s+views?\b/i);
   if (!match) return null;
-  const number = Number(match[1].replace(/,/g, ""));
-  const scale = { K: 1000, M: 1000000, B: 1000000000 };
-  return Number.isFinite(number)
-    ? Math.round(number * (scale[(match[2] || "").toUpperCase()] || 1))
-    : null;
+  const n = Number(match[1].replace(/,/g, ""));
+  const factor = { K: 1e3, M: 1e6, B: 1e9 }[(match[2] || "").toUpperCase()] || 1;
+  return Number.isFinite(n) ? Math.round(n * factor) : null;
 }
 
-function decodeText(raw) {
-  let value = String(raw || "");
-  for (let i = 0; i < 4; i++) {
-    const previous = value;
-    value = value
-      .replace(/&quot;|&#34;/gi, '"')
-      .replace(/&amp;|&#38;/gi, "&")
-      .replace(/&#39;|&apos;/gi, "'")
-      .replace(/\\u0026/gi, "&")
-      .replace(/\\u003d/gi, "=")
-      .replace(/\\u002f/gi, "/")
-      .replace(/\\\//g, "/");
-    try { value = decodeURIComponent(value); } catch { /* Not encoded. */ }
-    if (value === previous) break;
+function youtubeId(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(String(url));
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    let id = null;
+    if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      if (parsed.pathname === "/watch") id = parsed.searchParams.get("v");
+      else {
+        const m = parsed.pathname.match(/^\/(?:shorts|live|embed)\/([^/?#]+)/);
+        if (m) id = m[1];
+      }
+    } else if (host === "youtu.be") {
+      id = parsed.pathname.split("/").filter(Boolean)[0];
+    }
+    return ID_PATTERN.test(id || "") ? id : null;
+  } catch {
+    return null;
   }
-  return value;
 }
 
-function youtubeIds(raw) {
-  const value = decodeText(raw);
-  const ids = new Set();
-  const patterns = [
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?\bv=([A-Za-z0-9_-]{11})/gi,
-    /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
-    /(?:youtube\.com|youtube-nocookie\.com)\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/gi,
-    /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([A-Za-z0-9_-]{11})["']/gi
-  ];
-  for (const pattern of patterns) {
-    for (const match of value.matchAll(pattern)) {
-      if (ID_PATTERN.test(match[1])) ids.add(match[1]);
+function readMetadata(card) {
+  const candidates = [];
+  const warnings = [];
+  const push = (source, value) => {
+    const id = youtubeId(value);
+    if (id) candidates.push({ source, id, url: value });
+  };
+
+  for (const item of card.metadata || []) {
+    if (item.name === "mmeta") {
+      try {
+        const data = JSON.parse(item.value);
+        for (const key of ["murl", "purl", "ourl", "url"]) {
+          if (typeof data[key] === "string") push("mmeta." + key, data[key]);
+        }
+      } catch (error) {
+        warnings.push("Invalid mmeta JSON: " + error.message);
+      }
+    } else if (["ourl", "murl", "purl"].includes(item.name)) {
+      push(item.name, item.value);
     }
   }
-  return [...ids];
+
+  // A card's own direct URL is a fallback, not a broad HTML search.
+  for (const url of card.directUrls || []) push("direct-url", url);
+
+  const ids = [...new Set(candidates.map(c => c.id))];
+  return {
+    status: ids.length === 1 ? "matched" : ids.length > 1 ? "conflicting-ids" : "no-youtube-id",
+    videoId: ids.length === 1 ? ids[0] : null,
+    candidates,
+    warnings
+  };
 }
 
-function clip(value, length = 250) {
-  return String(value || "").replace(/\s+/g, " ").trim().slice(0, length);
+// A cautious diagnostic relevance check, not a proof of event identity.
+function relevance(title, query) {
+  const text = String(title || "").toLowerCase();
+  const q = query.toLowerCase();
+  const groups = [
+    ["hurricane", "tropical storm", "cyclone"],
+    ["blizzard", "snowstorm", "snow storm", "winter storm"],
+    ["tornado", "twister"],
+    ["flood", "flooding"],
+    ["wildfire", "forest fire"],
+    ["earthquake"],
+    ["heatwave", "heat wave"],
+    ["thunderstorm", "severe storm"],
+    ["ice storm", "freezing rain"]
+  ];
+  const group = groups.find(g => g.some(term => q.includes(term))) || [];
+  const eventTerms = group.filter(term => text.includes(term));
+  const words = q.match(/[a-z]+|\d{4}/g) || [];
+  const stop = new Set(["news", "video", "weather", "storm", "the", "and", "from"]);
+  const identifiers = words.filter(w => w.length >= 4 && !stop.has(w) && !group.some(g => g.includes(w)));
+  const matched = identifiers.filter(w => text.includes(w));
+  const likely = eventTerms.length > 0 && matched.length > 0;
+  return { likely, eventTerms, matchedIdentifiers: matched, identifiers, note: "Heuristic only; not independently verified" };
 }
 
-async function extractDiagnostics(page) {
+async function extractCards(page) {
   return page.evaluate(() => {
-    const viewPattern = /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
-    const selectors = [
-      ".mc_vtvc", ".mc_vtvc_card", ".mc_vtvc_con", "[class*='mc_vtvc']"
-    ];
-    const candidateNodes = [...new Set(selectors.flatMap(
-      selector => [...document.querySelectorAll(selector)]
-    ))];
-    const nodeIndex = new Map(candidateNodes.map((node, index) => [node, index]));
+    const viewRe = /\b\d[\d,.]*\s*[KMB]?\s+views?\b/i;
+    // Bing's mc_vtvc_b_canvas element is the individual result seen in Test #16.
+    const nodes = [...document.querySelectorAll(".mc_vtvc_b_canvas")];
     const cards = [];
-    for (const node of candidateNodes) {
+    const seenNodes = new Set();
+
+    for (const node of nodes) {
+      if (seenNodes.has(node)) continue;
+      seenNodes.add(node);
       const text = (node.innerText || "").trim();
-      const match = text.match(viewPattern);
+      const match = text.match(viewRe);
       if (!match) continue;
-      const titleNode = node.querySelector(".mc_vtvc_title, a[title], [class*='title']");
-      const title = titleNode
-        ? (titleNode.getAttribute("title") || titleNode.innerText || "").trim()
-        : "";
-      const attrs = [];
-      const attrNames = /mmeta|vrhdata|video|media|url|href|data-id|title/i;
-      for (const child of [node, ...node.querySelectorAll("*")]) {
-        for (const attr of child.attributes || []) {
-          if (attrNames.test(attr.name)) {
-            attrs.push({ name: attr.name, value: attr.value.slice(0, 1000) });
+
+      const titleNode = node.querySelector(".mc_vtvc_title, [class*='mc_vtvc_title'], a[title]");
+      const title = (titleNode?.getAttribute("title") || titleNode?.innerText || "").trim();
+      const metadata = [];
+      for (const element of [node, ...node.querySelectorAll("*")]) {
+        for (const attribute of element.attributes || []) {
+          const name = attribute.name.toLowerCase();
+          if (["mmeta", "ourl", "murl", "purl"].includes(name)) {
+            metadata.push({ name, value: attribute.value });
           }
         }
       }
-      const links = [...node.querySelectorAll("a[href]")].map(a => ({
-        href: a.href, title: a.getAttribute("title") || "", text: (a.innerText || "").trim().slice(0, 150)
-      }));
-      const parentCandidate = candidateNodes.find(other => other !== node && other.contains(node));
-      const childCandidates = candidateNodes.filter(other => other !== node && node.contains(other));
+      const directUrls = [...node.querySelectorAll("a[href]")]
+        .map(a => a.getAttribute("href"))
+        .filter(href => /^https?:\/\//i.test(href || ""));
+
       cards.push({
-        domIndex: nodeIndex.get(node),
-        tag: node.tagName.toLowerCase(),
-        className: String(node.className || "").slice(0, 250),
+        index: cards.length,
         title: title.slice(0, 250),
         label: match[0],
-        textPreview: text.slice(0, 500),
-        textLength: text.length,
-        linkCount: links.length,
-        links: links.slice(0, 12),
-        attributes: attrs.slice(0, 30),
-        parentCandidateIndex: parentCandidate ? nodeIndex.get(parentCandidate) : null,
-        childCandidateCount: childCandidates.length,
-        htmlSnippet: node.outerHTML.slice(0, 1800)
+        metadata,
+        directUrls,
+        className: String(node.className || ""),
+        textSample: text.slice(0, 350)
       });
     }
-    const leafLabels = [...document.querySelectorAll("*")].filter(el => {
-      const text = (el.innerText || "").trim();
-      return text.length <= 100 && viewPattern.test(text) &&
-        ![...el.children].some(child => viewPattern.test((child.innerText || "").trim()));
-    }).map(el => ({
-      label: (el.innerText || "").trim().slice(0, 100),
-      parentClass: String(el.parentElement?.className || "").slice(0, 150),
-      ancestorClasses: (() => {
-        const result = [];
-        let current = el;
-        for (let i = 0; i < 5 && current; i++, current = current.parentElement) {
-          result.push(String(current.className || "").slice(0, 100));
-        }
-        return result;
-      })()
-    }));
-    return {
-      title: document.title,
-      candidateNodeCount: candidateNodes.length,
-      leafLabelCount: leafLabels.length,
-      leafLabels: leafLabels.slice(0, 30),
-      cards
-    };
+    return { candidateNodes: nodes.length, cards };
   });
-}
-
-function analyze(data) {
-  const records = data.cards.map(card => {
-    const sources = [
-      ...card.links.map(link => link.href),
-      ...card.attributes.map(attribute => attribute.value),
-      card.htmlSnippet
-    ];
-    const ids = [...new Set(sources.flatMap(youtubeIds))];
-    return {
-      domIndex: card.domIndex,
-      title: clip(card.title),
-      label: card.label,
-      views: parseViews(card.label),
-      youtubeIdCandidates: ids,
-      idStatus: ids.length === 1 ? "ONE_CANDIDATE_NOT_VERIFIED" :
-        ids.length > 1 ? "AMBIGUOUS" : "NO_ID",
-      parentCandidateIndex: card.parentCandidateIndex,
-      childCandidateCount: card.childCandidateCount,
-      className: card.className,
-      linkCount: card.linkCount,
-      links: card.links.slice(0, 3),
-      textPreview: clip(card.textPreview, 220)
-    };
-  });
-  const byTitle = new Map();
-  for (const record of records) {
-    const key = record.title.toLowerCase();
-    if (!key) continue;
-    if (!byTitle.has(key)) byTitle.set(key, []);
-    byTitle.get(key).push(record.domIndex);
-  }
-  const duplicateTitles = [...byTitle.entries()]
-    .filter(([, indices]) => indices.length > 1)
-    .map(([title, indices]) => ({ title, domIndices: indices }));
-  return { records, duplicateTitles };
 }
 
 (async () => {
-  console.log("WEATHER TIME MACHINE — ENGINE 3 — TEST #16 / RAW CARD DIAGNOSTIC");
-  console.log("QUERY:", QUERY);
-  console.log("MINIMUM VIEWS:", MIN_VIEWS);
-  console.log("SEARCH URL:", SEARCH_URL);
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage({
-      viewport: { width: 1440, height: 900 }, locale: "en-US"
-    });
-    const response = await page.goto(SEARCH_URL, {
-      waitUntil: "domcontentloaded", timeout: 45000
-    });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
+    console.log("WEATHER TIME MACHINE — ENGINE 3 / TEST #17 — METADATA DIAGNOSTIC");
+    console.log("QUERY:", QUERY);
+    console.log("MINIMUM VIEWS:", MIN_VIEWS);
+    console.log("SEARCH URL:", SEARCH_URL);
+    const response = await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(5000);
     console.log("HTTP STATUS:", response?.status());
     console.log("PAGE TITLE:", await page.title());
-    if (!response || response.status() !== 200) {
-      throw new Error("Bing did not return HTTP 200.");
+    if (!response || response.status() !== 200) throw new Error("Bing did not return HTTP 200");
+
+    const extracted = await extractCards(page);
+    const unique = new Map();
+    const unresolved = [];
+    const unrelated = [];
+    const duplicates = [];
+    const allRecords = [];
+
+    for (const card of extracted.cards) {
+      const views = parseViews(card.label);
+      const identity = readMetadata(card);
+      const match = relevance(card.title, QUERY);
+      const record = {
+        index: card.index, title: card.title, views, label: card.label,
+        videoId: identity.videoId, idStatus: identity.status,
+        idSources: identity.candidates.map(c => c.source),
+        idCandidates: [...new Set(identity.candidates.map(c => c.id))],
+        likelyRelevant: match.likely, matchedTerms: [...match.eventTerms, ...match.matchedIdentifiers],
+        warnings: identity.warnings
+      };
+      allRecords.push(record);
+      if (!match.likely) {
+        unrelated.push(record);
+        continue;
+      }
+      if (identity.status !== "matched" || views === null) {
+        unresolved.push(record);
+        continue;
+      }
+      const prior = unique.get(identity.videoId);
+      if (prior) {
+        duplicates.push({ videoId: identity.videoId, previousIndex: prior.index, duplicateIndex: card.index });
+        if (views > prior.views) unique.set(identity.videoId, record);
+      } else {
+        unique.set(identity.videoId, record);
+      }
     }
-    const data = await extractDiagnostics(page);
-    const { records, duplicateTitles } = analyze(data);
-    const nested = records.filter(record =>
-      record.parentCandidateIndex !== null || record.childCandidateCount > 0
-    );
-    const candidateIds = new Set(records.flatMap(record => record.youtubeIdCandidates));
+
+    const videos = [...unique.values()];
+    const qualifying = videos.filter(v => v.views >= MIN_VIEWS);
+    const unresolvedQualifying = unresolved.filter(v => v.views !== null && v.views >= MIN_VIEWS);
     console.log("\nDIAGNOSTIC SUMMARY");
-    console.log("BING CANDIDATE DOM NODES:", data.candidateNodeCount);
-    console.log("NODES WITH VIEW LABELS:", records.length);
-    console.log("LEAF VIEW LABELS:", data.leafLabelCount);
-    console.log("NESTED/OVERLAPPING CANDIDATES:", nested.length);
-    console.log("DUPLICATE TITLES:", duplicateTitles.length);
-    console.log("DISTINCT YOUTUBE ID CANDIDATES (NOT VERIFIED):", candidateIds.size);
-    console.log("NODES WITH 1000+ VIEW LABELS:",
-      records.filter(record => record.views !== null && record.views >= MIN_VIEWS).length);
-    console.log("\nCARD RECORDS (FIRST 25):", JSON.stringify(records.slice(0, 25), null, 2));
-    console.log("\nDUPLICATE TITLE GROUPS:", JSON.stringify(duplicateTitles.slice(0, 20), null, 2));
-    console.log("\nLEAF VIEW LABEL SAMPLES:", JSON.stringify(data.leafLabels, null, 2));
-    console.log("\nRAW CARD SAMPLES (FIRST 3):", JSON.stringify(data.cards.slice(0, 3), null, 2));
+    console.log("INDIVIDUAL BING CARD NODES:", extracted.candidateNodes);
+    console.log("CARDS WITH VIEW LABELS:", extracted.cards.length);
+    console.log("LIKELY RELEVANT UNIQUE YOUTUBE IDS:", videos.length);
+    console.log("LIKELY RELEVANT VIDEOS WITH 1000+ VIEWS:", qualifying.length);
+    console.log("UNRELATED / UNCERTAIN TITLES:", unrelated.length);
+    console.log("DUPLICATE YOUTUBE IDS:", duplicates.length);
+    console.log("UNRESOLVED LIKELY RELEVANT CARDS:", unresolved.length);
+    console.log("UNRESOLVED LIKELY RELEVANT 1000+ CARDS:", unresolvedQualifying.length);
+    console.log("\nQUALIFYING CANDIDATES:", JSON.stringify(qualifying, null, 2));
+    console.log("\nUNRESOLVED RECORDS:", JSON.stringify(unresolved, null, 2));
+    console.log("\nDUPLICATES:", JSON.stringify(duplicates, null, 2));
+    console.log("\nUNRELATED / UNCERTAIN (FIRST 20):", JSON.stringify(unrelated.slice(0, 20), null, 2));
+    console.log("\nCARD RECORDS (FIRST 25):", JSON.stringify(allRecords.slice(0, 25), null, 2));
     console.log("\nFINAL STATUS");
-    console.log("DIAGNOSTIC COMPLETED — NO A-F GRADES GENERATED.");
-    console.log("FINAL GRADING STATUS: BLOCKED — inspect cards, relevance, and IDs.");
-    if (!records.length) {
-      console.log("WARNING: No candidate video cards with view labels were extracted.");
-    }
-    console.log("NOTE: HTTP 200 and green GitHub status do not verify video accuracy.");
+    console.log("TEST #17 DIAGNOSTIC COMPLETED — NO A-F GRADES GENERATED.");
+    console.log("FINAL GRADING STATUS: BLOCKED — title relevance, video ownership, and counts require independent verification.");
+    console.log("NOTE: A green GitHub job indicates diagnostic execution only, not grading approval.");
   } finally {
     await browser.close();
   }
 })().catch(error => {
-  console.error("ENGINE 3 TEST #16 ERROR:", error);
+  console.error("TEST #17 ERROR:", error);
   process.exitCode = 1;
 });
