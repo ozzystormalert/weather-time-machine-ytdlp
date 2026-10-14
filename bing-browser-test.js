@@ -3,161 +3,176 @@
 
 const { chromium } = require("playwright");
 
-// WEATHER TIME MACHINE — ENGINE 3 — TEST #19
-// Diagnostic only. No changes to Blogger, Engines 1/2, or A-F grades.
-const QUERY = process.env.WEATHER_QUERY || "hurricane sandy 2012 new jersey news";
+// WEATHER TIME MACHINE — ENGINE 3 — TEST #20
+// Multi-search diagnostic only. No Blogger or grading changes.
+const BASE_QUERY = process.env.WEATHER_QUERY || "hurricane sandy 2012 new jersey news";
 const MIN_VIEWS = 1000;
-const SEARCH_URL = "https://www.bing.com/videos/search?q=" + encodeURIComponent(QUERY);
+const SEARCHES = [...new Set([
+  BASE_QUERY,
+  BASE_QUERY.replace(/\s+news\s*$/i, "") + " footage",
+  BASE_QUERY.replace(/\s+news\s*$/i, "") + " youtube",
+  BASE_QUERY.replace(/\s+news\s*$/i, "") + " local news"
+])];
 
 function parseViews(text) {
-  const m = String(text || "").match(/(\d[\d,.]*)\s*([KMB])?\s*views?\b/i);
-  if (!m) return null;
-  const n = Number(m[1].replace(/,/g, ""));
-  return Number.isFinite(n) ? Math.round(n * ({ K: 1e3, M: 1e6, B: 1e9 }[(m[2] || "").toUpperCase()] || 1)) : null;
+  const match = String(text || "").match(/\b(\d[\d,.]*)\s*([KMB])?\s*views?\b/i);
+  if (!match) return null;
+  const number = Number(match[1].replace(/,/g, ""));
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * ({ K: 1000, M: 1000000, B: 1000000000 }[(match[2] || "").toUpperCase()] || 1));
 }
 
 function decode(raw) {
-  let s = String(raw || "");
+  let value = String(raw || "");
   for (let i = 0; i < 5; i++) {
-    const old = s;
-    s = s.replace(/&quot;|&#34;/gi, '"').replace(/&amp;|&#38;/gi, "&")
+    const previous = value;
+    value = value.replace(/&quot;|&#34;/gi, '"').replace(/&amp;|&#38;/gi, "&")
       .replace(/&#39;|&apos;/gi, "'").replace(/\\u0026/gi, "&")
       .replace(/\\u003d/gi, "=").replace(/\\u002f/gi, "/")
       .replace(/\\\//g, "/");
-    try { s = decodeURIComponent(s); } catch (_) {}
-    if (s === old) break;
+    try { value = decodeURIComponent(value); } catch (_) {}
+    if (value === previous) break;
   }
-  return s;
+  return value;
 }
 
 function idsFrom(raw) {
-  const text = decode(raw);
-  const ids = new Set();
+  const source = decode(raw);
+  const found = new Set();
   const patterns = [
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?[?&]v=([A-Za-z0-9_-]{11})/gi,
-    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?v=([A-Za-z0-9_-]{11})/gi,
+    /(?:youtube\.com|youtube-nocookie\.com)\/watch\?[^\s"'<>]*?\bv=([A-Za-z0-9_-]{11})/gi,
     /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
-    /youtube\.com\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/gi,
+    /youtube(?:-nocookie)?\.com\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/gi,
     /["'](?:videoId|video_id|youtubeId)["']\s*:\s*["']([A-Za-z0-9_-]{11})["']/gi
   ];
   for (const pattern of patterns) {
-    for (const m of text.matchAll(pattern)) ids.add(m[1]);
+    for (const match of source.matchAll(pattern)) found.add(match[1]);
   }
-  return [...ids];
+  return [...found];
+}
+
+function identify(card) {
+  let metadata = null;
+  try { metadata = JSON.parse(decode(card.meta)); } catch (_) {}
+  const directUrls = metadata && typeof metadata === "object"
+    ? [metadata.murl, metadata.purl, metadata.mediaUrl, metadata.contentUrl, metadata.ourl]
+      .filter(value => typeof value === "string") : [];
+  const direct = [...new Set(directUrls.flatMap(idsFrom))];
+  const metaIds = idsFrom(card.meta);
+  const attributeIds = [...new Set(card.attributes.flatMap(a => idsFrom(a.value)))];
+  const all = [...new Set([...direct, ...metaIds, ...attributeIds])];
+  if (direct.length === 1 && all.every(id => id === direct[0]))
+    return { id: direct[0], evidence: "consistent-metadata-url", candidates: all };
+  if (direct.length === 0 && all.length === 1)
+    return { id: all[0], evidence: "single-card-candidate", candidates: all };
+  return { id: null, evidence: all.length > 1 ? "ambiguous" : "missing", candidates: all };
 }
 
 function relevance(title) {
-  const t = String(title || "").toLowerCase();
-  const event = /\b(sandy|superstorm)\b/.test(t);
-  const place = /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(t);
-  const weather = /\b(hurricane|superstorm|storm surge|coastal flooding|flooding|evacuation|landfall)\b/.test(t);
-  const strict = event && (place || /\b2012\b/.test(t));
-  const broad = event || (weather && place);
-  return { strict, broad, event, place, weather, category: strict ? "strict" : broad ? "broad-only" : "uncertain" };
+  const text = String(title || "").toLowerCase();
+  const event = /\b(sandy|superstorm)\b/.test(text);
+  const place = /\b(new jersey|jersey shore|nj|atlantic city|seaside heights|hoboken|belmar|point pleasant|asbury park|long beach island|lbi)\b/.test(text);
+  const weather = /\b(hurricane|storm surge|flooding|evacuation|landfall)\b/.test(text);
+  return { strict: event && (place || /\b2012\b/.test(text)), broad: event || (weather && place) };
 }
 
 async function extract(page) {
   return page.evaluate(() => {
-    const viewRegex = /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
     const nodes = [...document.querySelectorAll(".mc_vtvc.b_canvas")];
-    const records = nodes.map((node, index) => {
+    const viewRegex = /\b\d[\d,.]*\s*[KMB]?\s*views?\b/i;
+    return nodes.map((node, index) => {
+      const titleElement = node.querySelector(".mc_vtvc_title, [class*='title'], a[title]");
+      const title = (titleElement?.getAttribute("title") || titleElement?.innerText || node.getAttribute("aria-label") || "").trim();
       const text = (node.innerText || "").trim();
-      const titleNode = node.querySelector(".mc_vtvc_title, [class*='title'], a[title]");
-      const title = (titleNode?.getAttribute("title") || titleNode?.innerText || node.getAttribute("aria-label") || "").trim();
-      const meta = node.querySelector("[mmeta]")?.getAttribute("mmeta") || "";
+      const labels = [...node.querySelectorAll("*")].filter(element =>
+        viewRegex.test((element.innerText || "").trim()) &&
+        ![...element.children].some(child => viewRegex.test((child.innerText || "").trim()))
+      ).map(element => (element.innerText || "").match(viewRegex)?.[0]).filter(Boolean);
       const attributes = [];
       for (const element of [node, ...node.querySelectorAll("[mmeta], [vrhdata], [ourl], [href], [data-mmeta]")]) {
-        for (const a of element.attributes || []) {
-          if (/mmeta|vrhdata|ourl|href|video|media|url|data-id/i.test(a.name)) {
-            attributes.push({ name: a.name, value: a.value });
-          }
+        for (const attr of element.attributes || []) {
+          if (/mmeta|vrhdata|ourl|href|video|media|url|data-id/i.test(attr.name))
+            attributes.push({ name: attr.name, value: attr.value });
         }
       }
-      const labels = [...node.querySelectorAll("*")]
-        .filter(el => viewRegex.test((el.innerText || "").trim()) && ![...el.children].some(c => viewRegex.test((c.innerText || "").trim())))
-        .map(el => (el.innerText || "").trim().match(viewRegex)?.[0]).filter(Boolean);
       return {
         index, title: title.slice(0, 250), label: labels[0] || text.match(viewRegex)?.[0] || "",
-        labelCount: labels.length, primaryMeta: meta, attributes: attributes.slice(0, 50),
-        htmlSample: node.outerHTML.slice(0, 25000)
+        meta: node.querySelector("[mmeta]")?.getAttribute("mmeta") || "",
+        attributes: attributes.slice(0, 50)
       };
     });
-    return { selector: ".mc_vtvc.b_canvas", count: nodes.length, records };
   });
-}
-
-function identify(card) {
-  let metaObject = null;
-  try { metaObject = JSON.parse(decode(card.primaryMeta)); } catch (_) {}
-  const metadataUrl = metaObject && typeof metaObject === "object"
-    ? [metaObject.murl, metaObject.purl, metaObject.mediaUrl, metaObject.contentUrl].filter(x => typeof x === "string")
-    : [];
-  const direct = [...new Set(metadataUrl.flatMap(idsFrom))];
-  const metaIds = idsFrom(card.primaryMeta);
-  const other = [...new Set(card.attributes.flatMap(a => idsFrom(a.value)).concat(idsFrom(card.htmlSample)))];
-  const candidates = [...new Set([...direct, ...metaIds, ...other])];
-  let id = null;
-  let evidence = "none";
-  if (direct.length === 1) { id = direct[0]; evidence = "metadata-url"; }
-  else if (direct.length === 0 && metaIds.length === 1) { id = metaIds[0]; evidence = "metadata-text"; }
-  else if (direct.length === 0 && metaIds.length === 0 && other.length === 1) { id = other[0]; evidence = "card-attribute"; }
-  return { id, evidence, candidates, ambiguous: !id && candidates.length > 1 };
 }
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
-    console.log("WEATHER TIME MACHINE — ENGINE 3 / TEST #19 — ID + RELEVANCE AUDIT");
-    console.log("QUERY:", QUERY);
+    const all = [];
+    console.log("WEATHER TIME MACHINE — ENGINE 3 — TEST #20 — MULTI-SEARCH DIAGNOSTIC");
+    console.log("BASE QUERY:", BASE_QUERY);
     console.log("MINIMUM VIEWS:", MIN_VIEWS);
-    console.log("SEARCH URL:", SEARCH_URL);
-    const response = await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(5000);
-    console.log("HTTP STATUS:", response?.status());
-    console.log("PAGE TITLE:", await page.title());
-    if (!response || response.status() !== 200) throw new Error("Bing did not return HTTP 200");
+    for (let index = 0; index < SEARCHES.length; index++) {
+      const query = SEARCHES[index];
+      const url = "https://www.bing.com/videos/search?q=" + encodeURIComponent(query);
+      console.log("\nSEARCH", index + 1, "OF", SEARCHES.length, ":", query);
+      try {
+        const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForTimeout(4500);
+        console.log("HTTP STATUS:", response?.status());
+        if (!response || response.status() !== 200) continue;
+        const cards = await extract(page);
+        console.log("CARDS:", cards.length);
+        for (const card of cards) {
+          const identity = identify(card);
+          all.push({ search: index + 1, query, title: card.title, label: card.label,
+            views: parseViews(card.label), ...identity, relevance: relevance(card.title) });
+        }
+      } catch (error) {
+        console.log("SEARCH ERROR:", error.message);
+      }
+    }
 
-    const data = await extract(page);
-    const rows = data.records.map(card => {
-      const identity = identify(card);
-      return { index: card.index, title: card.title, views: parseViews(card.label), label: card.label,
-        ...identity, relevance: relevance(card.title), youtubeUrl: identity.id ? "https://www.youtube.com/watch?v=" + identity.id : null };
-    });
-    const withViews = rows.filter(r => r.views !== null);
-    const qualifying = withViews.filter(r => r.views >= MIN_VIEWS);
-    const broad = qualifying.filter(r => r.relevance.broad);
-    const strict = broad.filter(r => r.relevance.strict);
-    const unique = new Map();
-    for (const row of broad) if (row.id && !unique.has(row.id)) unique.set(row.id, row);
-    const duplicates = broad.filter(row => row.id && unique.get(row.id) !== row);
-    const unresolved = broad.filter(row => !row.id);
-    const uncertain = qualifying.filter(row => !row.relevance.broad);
+    const withViews = all.filter(row => row.views !== null);
+    const thousand = withViews.filter(row => row.views >= MIN_VIEWS);
+    const relevant = thousand.filter(row => row.relevance.broad);
+    const byId = new Map();
+    for (const row of relevant) {
+      if (!row.id) continue;
+      if (!byId.has(row.id)) byId.set(row.id, { id: row.id, title: row.title,
+        views: row.views, searches: new Set(), evidence: new Set() });
+      const item = byId.get(row.id);
+      item.searches.add(row.search);
+      item.evidence.add(row.evidence);
+      item.views = Math.max(item.views, row.views);
+    }
+    const unique = [...byId.values()].map(item => ({ ...item,
+      searches: [...item.searches], evidence: [...item.evidence],
+      youtubeUrl: "https://www.youtube.com/watch?v=" + item.id }));
+    const unresolved = relevant.filter(row => !row.id);
 
     console.log("\nDIAGNOSTIC SUMMARY");
-    console.log("SELECTOR USED:", data.selector);
-    console.log("INDIVIDUAL BING CARD NODES:", data.count);
-    console.log("CARDS WITH VIEW LABELS:", withViews.length);
-    console.log("CARDS WITH 1000+ VIEWS:", qualifying.length);
-    console.log("STRICT MATCHES WITH 1000+ VIEWS:", strict.length);
-    console.log("BROAD MATCHES WITH 1000+ VIEWS:", broad.length);
-    console.log("DISTINCT BROAD-MATCH YOUTUBE ID CANDIDATES:", unique.size);
-    console.log("DUPLICATE BROAD-MATCH IDS:", duplicates.length);
-    console.log("UNRESOLVED BROAD MATCHES WITH 1000+ VIEWS:", unresolved.length);
-    console.log("UNCERTAIN OR UNRELATED CARDS WITH 1000+ VIEWS:", uncertain.length);
-    console.log("\nUNIQUE CANDIDATES:", JSON.stringify([...unique.values()], null, 2));
-    console.log("\nDUPLICATE RECORDS:", JSON.stringify(duplicates, null, 2));
-    console.log("\nUNRESOLVED RECORDS:", JSON.stringify(unresolved, null, 2));
-    console.log("\nUNCERTAIN / UNRELATED RECORDS:", JSON.stringify(uncertain, null, 2));
-    console.log("\nCARDS WITHOUT VIEW COUNTS:", JSON.stringify(rows.filter(r => r.views === null), null, 2));
+    console.log("SEARCH QUERIES ATTEMPTED:", SEARCHES.length);
+    console.log("TOTAL CARD OBSERVATIONS:", all.length);
+    console.log("CARDS WITH VIEW COUNTS:", withViews.length);
+    console.log("CARDS WITH 1000+ VIEWS:", thousand.length);
+    console.log("BROAD WEATHER MATCHES WITH 1000+ VIEWS:", relevant.length);
+    console.log("DISTINCT YOUTUBE ID CANDIDATES:", unique.length);
+    console.log("CANDIDATES SEEN IN MULTIPLE SEARCHES:", unique.filter(x => x.searches.length > 1).length);
+    console.log("UNRESOLVED RELEVANT 1000+ CARDS:", unresolved.length);
+    console.log("UNCERTAIN OR UNRELATED 1000+ CARDS:", thousand.length - relevant.length);
+    console.log("\nUNIQUE YOUTUBE CANDIDATES:", JSON.stringify(unique, null, 2));
+    console.log("\nUNRESOLVED QUALIFYING CARDS:", JSON.stringify(unresolved, null, 2));
+    console.log("\nUNCERTAIN / UNRELATED CARDS:", JSON.stringify(thousand.filter(x => !x.relevance.broad), null, 2));
     console.log("\nFINAL STATUS");
-    console.log("TEST #19 DIAGNOSTIC COMPLETED — NO A-F GRADES GENERATED.");
-    console.log("FINAL GRADING STATUS: BLOCKED — YouTube availability, video identity, and event relevance not independently confirmed.");
-    console.log("NOTE: Green GitHub status confirms only that this diagnostic ran.");
+    console.log("TEST #20 DIAGNOSTIC COMPLETED — NO A-F GRADES GENERATED.");
+    console.log("GRADING STATUS: BLOCKED — Bing view labels and YouTube identities are not independently verified.");
+    console.log("NOTE: Green GitHub status means the diagnostic ran, not that grading is approved.");
+    if (!all.length) process.exitCode = 1;
   } finally {
     await browser.close();
   }
 })().catch(error => {
-  console.error("ENGINE 3 TEST #19 ERROR:", error);
+  console.error("ENGINE 3 TEST #20 ERROR:", error);
   process.exitCode = 1;
 });
