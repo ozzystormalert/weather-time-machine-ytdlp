@@ -2,7 +2,7 @@
 const url = "https://www.dogpile.com/search?q=blizzard+of+1978+illinois&qc=video";
 
 async function testDogpile() {
-  console.log("ENGINE 3 — DOGPILE VIDEO TEST");
+  console.log("ENGINE 3 — DOGPILE HTML DIAGNOSTIC");
   console.log("Search:", url);
 
   try {
@@ -19,26 +19,42 @@ async function testDogpile() {
     console.log("HTTP STATUS:", response.status);
     console.log("HTML LENGTH:", html.length);
 
-    const views = [
-      ...html.matchAll(/([\d,.]+)\s*([KMB])?\s*views/gi)
+    const checks = [
+      "views",
+      "youtube",
+      "video",
+      "blizzard",
+      "28.1K",
+      "17.0K",
+      "load more",
+      "captcha"
     ];
 
-    console.log("VIEW COUNT MATCHES:", views.length);
-    console.log(
-      "SAMPLE VIEW COUNTS:",
-      views.slice(0, 15).map(x => x[0])
-    );
+    for (const term of checks) {
+      const position = html.toLowerCase().indexOf(term.toLowerCase());
+
+      console.log(
+        "CHECK:",
+        term,
+        "FOUND:",
+        position >= 0
+      );
+
+      if (position >= 0) {
+        const sample = html
+          .slice(Math.max(0, position - 100), position + 200)
+          .replace(/\s+/g, " ");
+
+        console.log("SAMPLE:", sample);
+      }
+    }
+
+    console.log("DIAGNOSTIC COMPLETE");
 
     if (!response.ok) {
-      console.log("RESULT: HTTP ACCESS FAILED");
       process.exitCode = 1;
-    } else if (views.length === 0) {
-      console.log("RESULT: NO VIEW COUNTS FOUND");
-      console.log("Page may require JavaScript rendering.");
-      process.exitCode = 1;
-    } else {
-      console.log("RESULT: VIEW COUNTS DETECTED");
     }
+
   } catch (error) {
     console.error("TEST FAILED:", error.message);
     process.exitCode = 1;
