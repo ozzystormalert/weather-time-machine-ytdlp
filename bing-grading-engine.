@@ -1,0 +1,468 @@
+
+"use strict";
+
+// WEATHER TIME MACHINE — ENGINE 3
+// BING SEARCH + RESOURCE GRADING ENGINE
+// TEST VERSION 1
+// Node.js 22 — No external packages
+// No yt-dlp, scraping, or YouTube bot requests.
+
+const fs = require("node:fs");
+
+const KEY = process.env.BING_API_KEY || "";
+
+const ENDPOINT =
+  process.env.BING_SEARCH_ENDPOINT ||
+  "https://api.bing.microsoft.com/v7.0/search";
+
+const EVENT = "Hurricane Sandy";
+const YEAR = "2012";
+const LOCATION = "New Jersey";
+
+const MAX_RESULTS = 20;
+
+// PROVISIONAL CATEGORIES AND WEIGHTS.
+// Replace with original seven categories and
+// original point weights when confirmed.
+
+const CATEGORIES = [
+  {
+    id: "news",
+    name: "News Reports",
+    weight: 15,
+    terms: "news reports archive"
+  },
+  {
+    id: "photos",
+    name: "Historical Photographs",
+    weight: 15,
+    terms: "historical photographs images"
+  },
+  {
+    id: "videos",
+    name: "News Footage and Videos",
+    weight: 14,
+    terms: "news footage video"
+  },
+  {
+    id: "documentaries",
+    name: "Documentaries",
+    weight: 14,
+    terms: "documentary film"
+  },
+  {
+    id: "government",
+    name: "Government and Meteorological Records",
+    weight: 14,
+    terms: "NOAA NWS government report"
+  },
+  {
+    id: "archives",
+    name: "Historical Archives",
+    weight: 14,
+    terms: "historical archive collection"
+  },
+  {
+    id: "education",
+    name: "Educational Research",
+    weight: 14,
+    terms: "university educational research analysis"
+  }
+];
+
+function clean(value) {
+  return String(value ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalize(value) {
+  return clean(value).toLowerCase();
+}
+
+function escapeRegex(value) {
+  return String(value)
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsPhrase(text, phrase) {
+  return new RegExp(
+    "\\b" + escapeRegex(phrase) + "\\b",
+    "i"
+  ).test(text);
+}
+
+function assessResource(item) {
+  const title = clean(item.name);
+  const snippet = clean(item.snippet);
+
+  const text = normalize(title + " " + snippet);
+
+  const eventTokens = EVENT.toLowerCase()
+    .split(/\s+/)
+    .filter(token => token.length > 3);
+
+  const eventMatch = eventTokens.every(
+    token => containsPhrase(text, token)
+  );
+
+  const yearMatch = containsPhrase(text, YEAR);
+
+  const locations = [
+    LOCATION,
+    "NJ",
+    "Jersey Shore",
+    "Seaside Heights",
+    "Atlantic City",
+    "Hoboken",
+    "Belmar",
+    "Mantoloking",
+    "Toms River",
+    "Asbury Park"
+  ];
+
+  const locationMatch = locations.some(
+    place => containsPhrase(text, place)
+  );
+
+  const validUrl =
+    /^https:\/\//i.test(item.url || "");
+
+  const preliminaryMatch =
+    eventMatch &&
+    yearMatch &&
+    locationMatch &&
+    validUrl;
+
+  return {
+    eventMatch,
+    yearMatch,
+    locationMatch,
+    validUrl,
+    preliminaryMatch,
+    verificationStatus:
+      "NEEDS_MANUAL_VERIFICATION"
+  };
+}
+
+// ORIGINAL GRADING PRINCIPLE:
+// 100 points requires verified acceptable
+// resources in all seven categories.
+//
+// These letter thresholds are provisional
+// until original grading bands are confirmed.
+
+function letterGrade(score, complete) {
+  if (!complete || score === null) {
+    return "Not Evaluated";
+  }
+
+  if (score === 100) return "A+";
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+
+  return "F";
+}
+
+// Search using an authorized Bing Web Search API.
+// This endpoint requires valid API access.
+
+async function bingSearch(query) {
+  const url = new URL(ENDPOINT);
+
+  url.searchParams.set("q", query);
+  url.searchParams.set(
+    "count",
+    String(MAX_RESULTS)
+  );
+  url.searchParams.set("mkt", "en-US");
+  url.searchParams.set(
+    "responseFilter",
+    "Webpages"
+  );
+
+  const controller = new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    20000
+  );
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "Ocp-Apim-Subscription-Key": KEY
+      },
+      signal: controller.signal
+    });
+
+    const raw = await response.text();
+
+    let data;
+
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        "Invalid API response. HTTP " +
+        response.status
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        "Bing API HTTP " +
+        response.status +
+        ": " +
+        (data.message ||
+          data.error?.message ||
+          "Unknown API error")
+      );
+    }
+
+    if (
+      !data.webPages ||
+      !Array.isArray(data.webPages.value)
+    ) {
+      throw new Error(
+        "Missing webPages results. " +
+        "Search cannot be confirmed complete."
+      );
+    }
+
+    return {
+      items: data.webPages.value,
+      estimatedTotal:
+        data.webPages.totalEstimatedMatches ??
+        null
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function main() {
+  console.log(
+    "======================================"
+  );
+
+  console.log(
+    "WEATHER TIME MACHINE — ENGINE 3"
+  );
+
+  console.log(
+    "BING RESOURCE GRADING TEST"
+  );
+
+  console.log(
+    "======================================"
+  );
+
+  console.log("EVENT:", EVENT);
+  console.log("YEAR:", YEAR);
+  console.log("LOCATION:", LOCATION);
+
+  const result = {
+    engine: 3,
+    test: "BING_GRADING",
+    event: EVENT,
+    year: YEAR,
+    location: LOCATION,
+    generatedAt: new Date().toISOString(),
+
+    gradingPolicy: {
+      maximumScore: 100,
+      weightsStatus: "PROVISIONAL",
+      verifiedResourceRequired: true,
+      zeroOnlyAfterCompletedReview: true,
+      incompleteSearch:
+        "Not Evaluated",
+      automaticPointsForSearchHits: false
+    },
+
+    categories: [],
+    summary: {}
+  };
+
+  if (!KEY) {
+    console.log(
+      "WARNING: BING_API_KEY is missing."
+    );
+  }
+
+  for (const category of CATEGORIES) {
+    const query =
+      '"' + EVENT + '" ' +
+      '"' + YEAR + '" ' +
+      '"' + LOCATION + '" ' +
+      category.terms;
+
+    console.log(
+      "\nSEARCH CATEGORY:",
+      category.name
+    );
+
+    const record = {
+      id: category.id,
+      name: category.name,
+      maximumPoints: category.weight,
+      query,
+      searchStatus: "NOT_EVALUATED",
+      verificationStatus:
+        "NOT_EVALUATED",
+      score: null,
+      grade: "Not Evaluated",
+      results: []
+    };
+
+    if (KEY) {
+      try {
+        const response =
+          await bingSearch(query);
+
+        record.searchStatus =
+          "COMPLETED";
+
+        record.estimatedTotal =
+          response.estimatedTotal;
+
+        record.results =
+          response.items.map(item => ({
+            title: clean(item.name),
+            url: item.url,
+            snippet: clean(item.snippet),
+            assessment:
+              assessResource(item)
+          }));
+
+        record.preliminaryMatches =
+          record.results.filter(
+            item =>
+              item.assessment.preliminaryMatch
+          ).length;
+
+        record.verificationStatus =
+          "PENDING_MANUAL_REVIEW";
+
+      } catch (error) {
+        record.searchStatus = "FAILED";
+        record.error = error.message;
+      }
+    }
+
+    console.log(
+      "SEARCH STATUS:",
+      record.searchStatus
+    );
+
+    console.log(
+      "PRELIMINARY MATCHES:",
+      record.preliminaryMatches ?? "N/A"
+    );
+
+    console.log(
+      "GRADE:",
+      record.grade
+    );
+
+    result.categories.push(record);
+  }
+
+  const completed =
+    result.categories.filter(
+      category =>
+        category.searchStatus ===
+        "COMPLETED"
+    ).length;
+
+  const preliminary =
+    result.categories.reduce(
+      (total, category) =>
+        total +
+        (category.preliminaryMatches || 0),
+      0
+    );
+
+  result.summary = {
+    searchesRequested:
+      CATEGORIES.length,
+
+    searchesCompleted:
+      completed,
+
+    preliminaryMatches:
+      preliminary,
+
+    verifiedCategories: 0,
+
+    score: null,
+
+    grade: "Not Evaluated",
+
+    gradingStatus:
+      "AWAITING_VERIFIED_RESOURCES",
+
+    note:
+      "Bing discovery is not equivalent " +
+      "to verified historical resources. " +
+      "Manual verification is required."
+  };
+
+  fs.writeFileSync(
+    "engine3-bing-grading-results.json",
+    JSON.stringify(result, null, 2)
+  );
+
+  console.log(
+    "\n======================================"
+  );
+
+  console.log(
+    "BING GRADING TEST SUMMARY"
+  );
+
+  console.log(
+    "======================================"
+  );
+
+  console.log(
+    "SEARCHES COMPLETED:",
+    completed,
+    "/",
+    CATEGORIES.length
+  );
+
+  console.log(
+    "PRELIMINARY MATCHES:",
+    preliminary
+  );
+
+  console.log(
+    "OVERALL GRADE: Not Evaluated"
+  );
+
+  console.log(
+    "REPORT:",
+    "engine3-bing-grading-results.json"
+  );
+
+  console.log(
+    "BLOGGER AND ENGINES 1/2 UNCHANGED."
+  );
+
+  if (completed !== CATEGORIES.length) {
+    process.exitCode = 1;
+  }
+}
+
+main().catch(error => {
+  console.error(
+    "BING GRADING TEST FAILED:",
+    error.message
+  );
+
+  process.exitCode = 1;
+});
