@@ -1,0 +1,62 @@
+
+name: Engine 3 - Independent JavaScript Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: State
+        required: true
+        default: 'New York'
+      year:
+        description: Event year
+        required: true
+        default: '2012'
+      event:
+        description: Historical weather event
+        required: true
+        default: 'Hurricane Sandy'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: engine3-report
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run JavaScript audit
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          EVENT_STATE: ${{ inputs.state }}
+          EVENT_YEAR: ${{ inputs.year }}
+          EVENT_NAME: ${{ inputs.event }}
+        run: node engine3-audit.js
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-audit-report
+          path: reports/engine3-latest.json
+          if-no-files-found: warn
+
+      - name: Publish report to repository
+        if: success()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports/engine3-latest.json
+          git diff --cached --quiet || (git commit -m 'Update Engine 3 audit report' && git push)
