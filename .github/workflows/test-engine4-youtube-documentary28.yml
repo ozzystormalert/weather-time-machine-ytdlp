@@ -1,0 +1,38 @@
+
+name: Engine 4 - YouTube Documentary Test 28
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  documentary-test:
+    name: Verify 20 Minute Documentaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Documentary Test 28
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          MIN_VIEWS: "1000"
+        run: node youtube-documentary-test28.js
+
+      - name: Upload Test 28 Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine4-test28-results
+          path: engine4-test28-results.json
+          if-no-files-found: warn
+          retention-days: 30
