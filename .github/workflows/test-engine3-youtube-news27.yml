@@ -1,0 +1,36 @@
+
+name: Engine 3 - YouTube News Accuracy Test 27
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  news-accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Engine 3 Test 27
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: node youtube-news-test27.js
+
+      - name: Save Test 27 Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-test27-results
+          path: engine3-test27-results.json
+          if-no-files-found: warn
+          retention-days: 30
