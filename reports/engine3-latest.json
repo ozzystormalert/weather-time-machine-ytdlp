@@ -1,0 +1,125 @@
+{
+  "engine": 3,
+  "technology": "GitHub Actions YAML + JavaScript",
+  "category": "YouTube News Coverage",
+  "event": "Hurricane Sandy",
+  "state": "New York",
+  "year": "2012",
+  "generated_at": "2026-10-16T00:55:07.495Z",
+  "status": "verified",
+  "score": 82,
+  "grade": "B",
+  "results": [
+    {
+      "title": "Superstorm, Hurricane Sandy 2012: Inside NYC's Flooded Subways",
+      "url": "https://www.youtube.com/watch?v=wtb-OK4bEs4",
+      "channel": "ABC News",
+      "published_at": "2012-10-31T14:20:51Z",
+      "views": 318008,
+      "score": 90,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "Superstorm Hurricane Sandy, New York City ING Marathon 2012: Should Race Be Cancelled?",
+      "url": "https://www.youtube.com/watch?v=D5w118FAvCg",
+      "channel": "ABC News",
+      "published_at": "2012-11-01T15:54:48Z",
+      "views": 11646,
+      "score": 88,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "Hurricane Sandy coverage - October 28, 2012 - WNBC New York (Weekend Today in NY)",
+      "url": "https://www.youtube.com/watch?v=oTw1SvkFytM",
+      "channel": "WideNewsWatch",
+      "published_at": "2012-10-29T02:00:11Z",
+      "views": 9761,
+      "score": 87,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "BBC: Sandy - Anatomy of a Superstorm (December 2012)",
+      "url": "https://www.youtube.com/watch?v=w17-3Lesnyw",
+      "channel": "New York Sea Grant",
+      "published_at": "2013-08-15T09:25:49Z",
+      "views": 2613547,
+      "score": 85,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "The Hurricane That Almost Drowned New York — Sandy 2012",
+      "url": "https://www.youtube.com/watch?v=BW4LsPFD-5A",
+      "channel": "Storm Reckoning",
+      "published_at": "2026-08-22T04:00:29Z",
+      "views": 32541,
+      "score": 79,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "Hurricane Sandy Makes Landfall in Queens, New York Oct 28/29, 2012",
+      "url": "https://www.youtube.com/watch?v=N_zp2YauBc4",
+      "channel": "StormChasingVideo",
+      "published_at": "2023-07-05T19:28:09Z",
+      "views": 3332,
+      "score": 77,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "Hurricane Sandy 2012: The Night New York Drowned #hurricanesandy #usa",
+      "url": "https://www.youtube.com/watch?v=DakpAtXlaSI",
+      "channel": "Econovix Files",
+      "published_at": "2026-09-06T15:32:36Z",
+      "views": 2645,
+      "score": 76,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "November 8, 2012 - After Hurricane Sandy - Full Episode | MetroFocus",
+      "url": "https://www.youtube.com/watch?v=ftLytCqQFLA",
+      "channel": "THIRTEEN",
+      "published_at": "2012-11-09T00:58:55Z",
+      "views": 1463,
+      "score": 76,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    },
+    {
+      "title": "2012: Hurricane Sandy | United Nations",
+      "url": "https://www.youtube.com/watch?v=SEj9bc2bH3E",
+      "channel": "United Nations",
+      "published_at": "2025-07-12T06:00:32Z",
+      "views": 2041,
+      "score": 76,
+      "eligible": true,
+      "reasons": [
+        "Event name, year and state matched; minimum 1000 views"
+      ]
+    }
+  ],
+  "message": "9 qualifying clips; metadata-based relevance only, not video-content verification.",
+  "checked_count": 36,
+  "rejected_count": 27
+}
