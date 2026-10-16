@@ -1,0 +1,38 @@
+
+name: Engine 3 - Historical Footage Verification Test 40
+
+on:
+  workflow_dispatch:
+
+jobs:
+  historical-verification:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Test 40
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          WEATHER_STATE: New Jersey
+          WEATHER_YEAR: '2012'
+          WEATHER_EVENT: Hurricane Sandy
+        run: node engine3-youtube-test40.js
+
+      - name: Upload Test 40 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-youtube-test40-report
+          path: |
+            reports/engine3-youtube-test40.json
+            reports/engine3-youtube-test40-review.md
+          if-no-files-found: warn
