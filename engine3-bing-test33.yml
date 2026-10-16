@@ -1,0 +1,43 @@
+name: Engine 3 - Bing Video and Web Test 33
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'State'
+        required: true
+        default: 'New Jersey'
+      year:
+        description: 'Historical event year'
+        required: true
+        default: '2012'
+      event:
+        description: 'Weather event'
+        required: true
+        default: 'Hurricane Sandy'
+jobs:
+  bing-test33:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Run Bing Test 33
+        env:
+          WEATHER_STATE: ${{ inputs.state }}
+          WEATHER_YEAR: ${{ inputs.year }}
+          WEATHER_EVENT: ${{ inputs.event }}
+        run: node engine3-bing-test33.js
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-bing-test33-report
+          path: reports/engine3-bing-test33.json
+          if-no-files-found: warn
