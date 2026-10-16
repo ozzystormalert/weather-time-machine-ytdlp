@@ -1,0 +1,37 @@
+
+name: Engine 3 - Evidence Validation Test 43
+
+on:
+  workflow_dispatch:
+
+jobs:
+  evidence-validation:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 3 Test 43
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: node engine3-youtube-test43.js
+
+      - name: Upload Test 43 Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-youtube-test43-report
+          path: |
+            reports/engine3-youtube-test43.json
+            reports/engine3-test43-blogger-preview.json
+            reports/engine3-test43-review.md
+          if-no-files-found: warn
