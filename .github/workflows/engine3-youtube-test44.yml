@@ -1,0 +1,35 @@
+
+name: Engine 3 - Blogger Integration Test 44
+
+on:
+  workflow_dispatch:
+
+jobs:
+  blogger-integration:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Test 44
+        run: node engine3-blogger-test44.js
+
+      - name: Upload Test 44 Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-youtube-test44-report
+          path: |
+            reports/engine3-test44-report.json
+            reports/engine3-test44-blogger-component.html
+            reports/engine3-test44-preview.html
+          if-no-files-found: warn
