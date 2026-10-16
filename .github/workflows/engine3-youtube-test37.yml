@@ -1,0 +1,36 @@
+
+name: Engine 3 - YouTube Historical Relevance Test 37
+
+on:
+  workflow_dispatch:
+
+jobs:
+  youtube-test37:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 3 Test 37
+        env:
+          WEATHER_STATE: New Jersey
+          WEATHER_YEAR: '2012'
+          WEATHER_EVENT: Hurricane Sandy
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: node engine3-youtube-test37.js
+
+      - name: Upload Test 37 JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine3-youtube-test37-report
+          path: reports/engine3-youtube-test37.json
+          if-no-files-found: warn
