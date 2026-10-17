@@ -1,0 +1,74 @@
+
+name: Engine 5 - Original Map Evidence Test 4
+
+on:
+  workflow_dispatch:
+    inputs:
+      event:
+        description: "Historical weather event"
+        required: true
+        default: "Superstorm Sandy"
+        type: string
+
+      state:
+        description: "U.S. state"
+        required: true
+        default: "New Jersey"
+        type: string
+
+      year:
+        description: "Historical event year"
+        required: true
+        default: "2012"
+        type: string
+
+      image_url:
+        description: "Direct URL of original weather map image"
+        required: true
+        type: string
+
+      source_url:
+        description: "Original source webpage URL"
+        required: true
+        type: string
+
+jobs:
+  map-evidence-test:
+    name: Engine 5 Test 4
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout GitHub repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Original Map Evidence Test 4
+        env:
+          TEST_EVENT: ${{ inputs.event }}
+          TEST_STATE: ${{ inputs.state }}
+          TEST_YEAR: ${{ inputs.year }}
+          TEST_IMAGE_URL: ${{ inputs.image_url }}
+          TEST_SOURCE_URL: ${{ inputs.source_url }}
+        run: |
+          node engine5/engine5-map-evidence-test4.js \
+            --event "$TEST_EVENT" \
+            --state "$TEST_STATE" \
+            --year "$TEST_YEAR" \
+            --image "$TEST_IMAGE_URL" \
+            --source "$TEST_SOURCE_URL"
+
+      - name: Upload Test 4 evidence report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-test4-evidence-report
+          path: engine5-test4-results.json
+          if-no-files-found: warn
+          retention-days: 30
