@@ -1,0 +1,16 @@
+
+{
+  "name": "weather-time-machine-engine5",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Weather Time Machine Engine 5 Historical Weather Map Verification",
+  "main": "engine5-server.js",
+  "scripts": {
+    "start": "node engine5-server.js",
+    "check": "node --check engine5-server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED"
+}
