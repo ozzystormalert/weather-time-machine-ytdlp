@@ -1,0 +1,49 @@
+
+name: Engine 6 Test 6.3 FREE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gallery-grading-test:
+    name: Engine 6 Gallery Count Grading
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify Engine 6 files
+        run: |
+          test -f engine6/engine6-gallery-grading-test63.js
+          test -f engine6/engine6-gallery-reviews-test63.json
+          test -f engine6/engine6-test63.js
+          echo "All Engine 6 Test 6.3 files found."
+
+      - name: Run 25 automatic grading tests
+        run: node engine6/engine6-test63.js
+
+      - name: Generate gallery grading report
+        env:
+          INPUT: engine6/engine6-gallery-reviews-test63.json
+          OUTPUT: engine6-test63-results.json
+        run: node engine6/engine6-gallery-grading-test63.js
+
+      - name: Display grading report
+        run: cat engine6-test63-results.json
+
+      - name: Upload grading report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine6-test63-gallery-grading-report
+          path: engine6-test63-results.json
+          if-no-files-found: warn
