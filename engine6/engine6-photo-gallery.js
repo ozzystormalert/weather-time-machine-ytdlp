@@ -1,162 +1,163 @@
 
 'use strict';
 
-const assert = require('node:assert/strict');
+// Weather Time Machine — Engine 6 v6.1
+// Historical Weather Photo Gallery Audit
+// Node.js 22 — No external packages
 
-const {
-  audit,
-  grade,
-  googleLink
-} = require('./engine6-photo-gallery');
+const fs = require('node:fs');
+const { URL } = require('node:url');
 
-const good = {
-  searchCompleted: true,
-  galleryVerified: true,
-  eventVerified: true,
-  stateVerified: true,
-  photosVerified: true,
-  evidenceUrl: 'https://example.org/irene-vermont-gallery',
-  collectionSize: 'gallery'
-};
+const GRADES = Object.freeze({
+  VERIFIED: 100,
+  LIMITED: 50,
+  NONE: 0
+});
 
-const tests = [
-  [
-    'Google Web Search formula',
-    () => assert.equal(
-      audit({
-        event: 'Tropical Storm Irene',
-        state: 'Vermont'
-      }).searchTerm,
-      'photo gallery Tropical Storm Irene Vermont'
-    )
-  ],
-  [
-    'Google link does not use image search',
-    () => assert.ok(
-      !googleLink(
-        'Tropical Storm Irene',
-        'Vermont'
-      ).includes('tbm=isch')
-    )
-  ],
-  [
-    'Verified gallery scores 100',
-    () => assert.equal(
-      grade(good).score,
-      100
-    )
-  ],
-  [
-    'Verified limited collection scores 50',
-    () => assert.equal(
-      grade({
-        ...good,
-        collectionSize: 'limited'
-      }).score,
-      50
-    )
-  ],
-  [
-    'Incomplete search is Not Evaluated',
-    () => assert.equal(
-      grade({
-        ...good,
-        searchCompleted: false
-      }).score,
-      null
-    )
-  ],
-  [
-    'Missing evidence URL is Not Evaluated',
-    () => assert.equal(
-      grade({
-        ...good,
-        evidenceUrl: ''
-      }).score,
-      null
-    )
-  ],
-  [
-    'Unverified event is Not Evaluated',
-    () => assert.equal(
-      grade({
-        ...good,
-        eventVerified: false
-      }).score,
-      null
-    )
-  ],
-  [
-    'Unverified state is Not Evaluated',
-    () => assert.equal(
-      grade({
-        ...good,
-        stateVerified: false
-      }).score,
-      null
-    )
-  ],
-  [
-    'Unverified photos are Not Evaluated',
-    () => assert.equal(
-      grade({
-        ...good,
-        photosVerified: false
-      }).score,
-      null
-    )
-  ],
-  [
-    'Documented no gallery scores 0',
-    () => assert.equal(
-      grade({
-        searchCompleted: true,
-        confirmedNoGallery: true,
-        searchCoverageDocumented: true,
-        checkedUrls: [
-          'https://example.org/search'
-        ]
-      }).score,
-      0
-    )
-  ],
-  [
-    'Undocumented no gallery is Not Evaluated',
-    () => assert.equal(
-      grade({
-        searchCompleted: true,
-        confirmedNoGallery: true
-      }).score,
-      null
-    )
-  ],
-  [
-    'Google search listing alone does not score',
-    () => assert.equal(
-      grade({
-        searchCompleted: true,
-        checkedUrls: [
-          'https://www.google.com/search?q=photos'
-        ]
-      }).score,
-      null
-    )
-  ]
-];
+function text(value) {
+  return typeof value === 'string'
+    ? value.trim()
+    : '';
+}
 
-let passed = 0;
+function queryFor(event, state) {
+  if (!text(event) || !text(state)) {
+    throw new Error('Event and state are required');
+  }
 
-for (const [name, fn] of tests) {
+  return `photo gallery ${text(event)} ${text(state)}`;
+}
+
+function googleLink(event, state) {
+  return 'https://www.google.com/search?q=' +
+    encodeURIComponent(queryFor(event, state));
+}
+
+function validHttpUrl(value) {
   try {
-    fn();
-    console.log('PASS:', name);
-    passed++;
-  } catch (err) {
-    console.error('FAIL:', name, err.message);
+    const url = new URL(value);
+
+    return (
+      (url.protocol === 'https:' ||
+       url.protocol === 'http:') &&
+      Boolean(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function grade(evidence) {
+  if (!evidence || evidence.searchCompleted !== true) {
+    return {
+      status: 'Not Evaluated',
+      score: null,
+      grade: null,
+      reason: 'Search not completed'
+    };
+  }
+
+  if (
+    evidence.galleryVerified === true &&
+    evidence.eventVerified === true &&
+    evidence.stateVerified === true &&
+    evidence.photosVerified === true &&
+    validHttpUrl(evidence.evidenceUrl)
+  ) {
+    if (evidence.collectionSize === 'limited') {
+      return {
+        status: 'Verified limited photo collection',
+        score: GRADES.LIMITED,
+        grade: '50/100',
+        reason: 'Relevant limited photo collection verified'
+      };
+    }
+
+    if (evidence.collectionSize === 'gallery') {
+      return {
+        status: 'Verified relevant photo gallery',
+        score: GRADES.VERIFIED,
+        grade: 'A+',
+        reason: 'Relevant photo gallery verified'
+      };
+    }
+  }
+
+  if (
+    evidence.confirmedNoGallery === true &&
+    evidence.galleryVerified !== true &&
+    evidence.searchCompleted === true &&
+    evidence.searchCoverageDocumented === true &&
+    Array.isArray(evidence.checkedUrls) &&
+    evidence.checkedUrls.length > 0 &&
+    evidence.checkedUrls.every(validHttpUrl)
+  ) {
+    return {
+      status: 'Confirmed no relevant gallery',
+      score: GRADES.NONE,
+      grade: '0/100',
+      reason: 'Completed documented search confirmed no relevant gallery'
+    };
+  }
+
+  return {
+    status: 'Not Evaluated',
+    score: null,
+    grade: null,
+    reason: 'Evidence insufficient or not independently verified'
+  };
+}
+
+function audit(input) {
+  const event = text(input?.event);
+  const state = text(input?.state);
+  const year = text(String(input?.year ?? ''));
+
+  const searchTerm = queryFor(event, state);
+  const evaluation = grade(input?.evidence);
+
+  return {
+    engine: 6,
+    version: '6.1',
+    event,
+    state,
+    year,
+    searchTerm,
+    googleSearchUrl: googleLink(event, state),
+    ...evaluation,
+    evidenceUrl: validHttpUrl(input?.evidence?.evidenceUrl)
+      ? input.evidence.evidenceUrl
+      : null,
+    automatedDiscovery: false,
+    note: 'Google Web Search is a research link, not verification evidence. Gallery evidence must be independently verified.'
+  };
+}
+
+// Allow direct execution to generate a JSON report.
+if (require.main === module) {
+  try {
+    const inputPath = process.argv[2];
+
+    const input = inputPath
+      ? JSON.parse(fs.readFileSync(inputPath, 'utf8'))
+      : {
+          event: process.env.EVENT || 'Tropical Storm Irene',
+          state: process.env.STATE || 'Vermont',
+          year: process.env.YEAR || '2011'
+        };
+
+    console.log(JSON.stringify(audit(input), null, 2));
+  } catch (error) {
+    console.error(error.message);
     process.exitCode = 1;
   }
 }
 
-console.log(
-  `Engine 6 Test 6.1: ${passed}/${tests.length} passed`
-);
+// Required exports for engine6-test61.js
+module.exports = {
+  queryFor,
+  googleLink,
+  validHttpUrl,
+  grade,
+  audit
+};
