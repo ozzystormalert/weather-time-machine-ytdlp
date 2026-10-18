@@ -1,0 +1,82 @@
+
+name: Engine 5 - Test 6 - Grading Accuracy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  grading-test:
+    name: Engine 5 Grading Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify JavaScript file exists
+        run: |
+          echo "Checking Engine 5 Test 6 JavaScript..."
+
+          test -f engine5/engine5-grading-test6.js
+
+          echo "JavaScript file found."
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check engine5/engine5-grading-test6.js
+
+      - name: Run Engine 5 Test 6
+        run: |
+          node engine5/engine5-grading-test6.js
+
+      - name: Display grading report
+        if: always()
+        run: |
+          if [ -f engine5-test6-results.json ]; then
+            echo "ENGINE 5 - TEST 6 RESULTS"
+            cat engine5-test6-results.json
+          else
+            echo "Test 6 report not generated."
+          fi
+
+      - name: Upload Test 6 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-test6-grading-report
+          path: engine5-test6-results.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Generate GitHub summary
+        if: always()
+        run: |
+          {
+            echo "## Weather Time Machine - Engine 5"
+            echo ""
+            echo "### Test 6 - Grading Accuracy"
+            echo ""
+            echo "Checks:"
+            echo "- Verified full evidence: 100"
+            echo "- Verified limited evidence: 50"
+            echo "- Confirmed absence: 0"
+            echo "- Incomplete searches: Not Evaluated"
+            echo "- Unverified authenticity: Not Evaluated"
+            echo ""
+            echo "This is a synthetic grading-policy test."
+            echo "It does not authenticate live historical maps."
+            echo ""
+            if [ -f engine5-test6-results.json ]; then
+              echo "Grading report generated."
+            else
+              echo "Grading report unavailable."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
