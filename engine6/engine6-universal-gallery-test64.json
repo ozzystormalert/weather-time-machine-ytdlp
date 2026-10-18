@@ -1,0 +1,43 @@
+
+{
+  "engine": 6,
+  "version": "6.4-free",
+  "category": "Historical Photo Gallery",
+  "scope": "Universal — All 50 States and All Weather Events",
+  "gradingRules": {
+    "fiveOrMore": {
+      "minimum": 5,
+      "score": 100,
+      "grade": "A+"
+    },
+    "twoToFour": {
+      "minimum": 2,
+      "maximum": 4,
+      "score": 50,
+      "grade": "Partial"
+    },
+    "zeroAfterCompletedResearch": {
+      "count": 0,
+      "score": 0,
+      "grade": "None found"
+    },
+    "oneGallery": {
+      "count": 1,
+      "score": null,
+      "grade": "Not Evaluated"
+    },
+    "incompleteResearch": {
+      "score": null,
+      "grade": "Not Evaluated"
+    }
+  },
+  "researchMethod": {
+    "source": "Google Search",
+    "queryTemplate": "photo gallery {event} {state} {year}",
+    "googleScraping": false,
+    "apiKeyRequired": false,
+    "paidServices": false,
+    "countMethod": "Distinct independently verified photo galleries"
+  },
+  "events": []
+}
