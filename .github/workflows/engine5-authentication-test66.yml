@@ -1,0 +1,39 @@
+
+name: Engine 5 - Authentication Test 6.6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authentication-test:
+    name: Historical Map Authentication
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 5 Authentication Test 6.6
+        env:
+          ENGINE5_URL: https://weather-time-machine-engine5.onrender.com
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+        run: node engine5/engine5-authentication-v66.js
+
+      - name: Upload authentication results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-v66-authentication-results
+          path: engine5-v66-authentication-results.json
+          if-no-files-found: warn
