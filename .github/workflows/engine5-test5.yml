@@ -26,31 +26,45 @@ jobs:
         run: |
           echo "Locating Engine 5 Test 5 JavaScript..."
 
-          if [ -f "engine5/engine5-map-authenticity-test5.js" ]; then
+          if [ -f "engine5/engine5/map-authenticity-test5.js" ]; then
+            echo "TEST5_SCRIPT=engine5/engine5/map-authenticity-test5.js" >> "$GITHUB_ENV"
+            echo "Found Test 5 JavaScript in nested engine5 folder"
+
+          elif [ -f "engine5/map-authenticity-test5.js" ]; then
+            echo "TEST5_SCRIPT=engine5/map-authenticity-test5.js" >> "$GITHUB_ENV"
+            echo "Found Test 5 JavaScript in engine5 folder"
+
+          elif [ -f "engine5/engine5-map-authenticity-test5.js" ]; then
             echo "TEST5_SCRIPT=engine5/engine5-map-authenticity-test5.js" >> "$GITHUB_ENV"
-            echo "Found JavaScript in engine5/"
+            echo "Found Test 5 JavaScript using original filename"
 
           elif [ -f "engine5/engine5/engine5-map-authenticity-test5.js" ]; then
             echo "TEST5_SCRIPT=engine5/engine5/engine5-map-authenticity-test5.js" >> "$GITHUB_ENV"
-            echo "Found JavaScript in engine5/engine5/"
+            echo "Found Test 5 JavaScript in nested folder"
 
           else
-            echo "ERROR: Test 5 JavaScript file not found."
+            echo "ERROR: Engine 5 Test 5 JavaScript not found."
             echo "Available Engine 5 files:"
-            find engine5 -maxdepth 3 -type f -print
+            find engine5 -maxdepth 4 -type f -print
             exit 1
           fi
 
       - name: Check JavaScript Syntax
         shell: bash
         run: |
-          echo "Checking JavaScript syntax..."
+          echo "Checking Test 5 JavaScript syntax..."
           node --check "$TEST5_SCRIPT"
+          echo "JavaScript syntax check passed."
 
       - name: Run Test 5
         shell: bash
         run: |
-          echo "Running Engine 5 Historical Map Authenticity Test 5..."
+          echo "======================================"
+          echo "WEATHER TIME MACHINE - ENGINE 5"
+          echo "HISTORICAL MAP AUTHENTICITY TEST 5"
+          echo "======================================"
+          echo "Running: $TEST5_SCRIPT"
+
           node "$TEST5_SCRIPT"
 
       - name: Upload Test 5 Evidence Report
