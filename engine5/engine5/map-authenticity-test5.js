@@ -1,83 +1,86 @@
 
 'use strict';
 
-/**
- * WEATHER TIME MACHINE — ENGINE 5
- * TEST 5: HISTORICAL MAP AUTHENTICITY
- * AND SOURCE VERIFICATION
- *
- * Node.js 22
- * No external packages
- * No API key required
- *
- * IMPORTANT:
- * This test verifies evidence integrity,
- * source-page metadata and negative controls.
- *
- * It does NOT perform visual image recognition
- * or automatically certify historical authenticity.
- *
- * It does NOT assign A–F grades.
- */
+/*
+ WEATHER TIME MACHINE — ENGINE 5
+ TEST 5: HISTORICAL MAP AUTHENTICITY
+ CORRECTED EVIDENCE VERIFICATION
+
+ Node.js 22
+ No external packages
+ No API keys
+ Does not modify the live Engine 5 service.
+
+ This test:
+ 1. Downloads and fingerprints the candidate image.
+ 2. Downloads the claimed source webpage.
+ 3. Checks for an explicit source-to-image link.
+ 4. Downloads an independent historical reference.
+ 5. Saves evidence for visual inspection.
+ 6. Tests metadata negative controls.
+ 7. Refuses to invent historical authenticity.
+
+ A successful execution is not an authenticity grade.
+*/
 
 const fs = require('node:fs');
+const path = require('node:path');
 const crypto = require('node:crypto');
 const dns = require('node:dns').promises;
 const net = require('node:net');
-const { URL } = require('node:url');
 
-const OUT = 'engine5-test5-results.json';
+const REPORT = 'engine5-test5-results.json';
+const EVIDENCE_DIR = 'engine5-test5-evidence';
 
-// ------------------------------------------
-// COMMAND-LINE INPUTS
-// ------------------------------------------
+const MB = 1024 * 1024;
 
-const opts = {};
+const LIMITS = {
+  image: 15 * MB,
+  webpage: 5 * MB,
+  reference: 25 * MB
+};
+
+const args = {};
 
 for (let i = 2; i < process.argv.length; i++) {
-  if (
-    process.argv[i].startsWith('--') &&
-    i + 1 < process.argv.length
-  ) {
-    opts[process.argv[i++].slice(2)] =
-      process.argv[i];
+  const value = process.argv[i];
+
+  if (value.startsWith('--') && i + 1 < process.argv.length) {
+    args[value.slice(2)] = process.argv[++i];
   }
 }
 
-const event = (
-  opts.event || 'Superstorm Sandy'
+const event = String(
+  args.event || 'Superstorm Sandy'
 ).trim();
 
-const state = (
-  opts.state || 'New Jersey'
+const state = String(
+  args.state || 'New Jersey'
 ).trim();
 
-const year = (
-  opts.year || '2012'
+const year = String(
+  args.year || '2012'
 ).trim();
 
-const imageURL = (
-  opts.image ||
+const imageURL = String(
+  args.image ||
   'https://response.restoration.noaa.gov/download/file/fid/1976'
 ).trim();
 
-const sourceURL = (
-  opts.source ||
+const sourceURL = String(
+  args.source ||
   'https://response.restoration.noaa.gov/atlantic-erma-and-sandy-response'
 ).trim();
 
-const referenceURL = (
-  opts.reference ||
+const referenceURL = String(
+  args.reference ||
   'https://www.nhc.noaa.gov/data/tcr/AL182012_Sandy.pdf'
 ).trim();
 
-// ------------------------------------------
-// RESULTS
-// ------------------------------------------
-
-const result = {
-  test:
-    'Engine 5 — Test 5: Historical Map Authenticity and Source Verification',
+const report = {
+  test: 'Engine 5 — Historical Map Authenticity Test 5',
+  version: '5.2-corrected',
+  timestamp: new Date().toISOString(),
 
   event,
   state,
@@ -89,6 +92,7 @@ const result = {
     referenceURL
   },
 
+  execution: 'pending',
   status: 'not_evaluated',
 
   score: null,
@@ -97,71 +101,149 @@ const result = {
 
   checks: {},
   negativeControls: {},
+  evidenceFiles: [],
   errors: [],
+  warnings: [],
+
+  manualReview: {
+    imageIsWeatherMap: 'not_verified',
+    correctHistoricalEvent: 'not_verified',
+    correctGeography: 'not_verified',
+    correctDate: 'not_verified',
+    originalSourceProvenance: 'not_verified',
+    reviewer: null,
+    reviewDate: null
+  },
 
   limitations: [
-    'Image pixels are not visually classified.',
-    'Source-page terms do not prove an image belongs to that page.',
-    'A trusted domain alone does not authenticate a map.',
-    'A reference report verifies historical context, not the candidate image.'
+    'File signatures do not establish image subject matter.',
+    'Page keyword matches do not establish image provenance.',
+    'A government domain alone does not prove image authenticity.',
+    'The reference PDF confirms historical context, not automatically the candidate image.',
+    'No automated image recognition or documented human visual review is performed.',
+    'Negative controls test metadata logic, not actual image classification.',
+    'No A–F grade is assigned by Test 5.'
   ]
 };
 
-// ------------------------------------------
-// RECORD CHECK
-// ------------------------------------------
-
-function mark(key, status, reason) {
-  result.checks[key] = {
+function check(name, status, reason, details = null) {
+  report.checks[name] = {
     status,
     reason
   };
+
+  if (details !== null) {
+    report.checks[name].details = details;
+  }
 }
 
-// ------------------------------------------
-// NETWORK SAFETY
-// ------------------------------------------
+function sha256(buffer) {
+  return crypto
+    .createHash('sha256')
+    .update(buffer)
+    .digest('hex');
+}
 
-function privateIP(ip) {
-  if (net.isIP(ip) === 4) {
-    const a = ip.split('.').map(Number);
+function detectFormat(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    )
+  ) {
+    return 'PNG';
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 255 &&
+    buffer[1] === 216 &&
+    buffer[2] === 255
+  ) {
+    return 'JPEG';
+  }
+
+  if (
+    buffer.length >= 6 &&
+    ['GIF87a', 'GIF89a'].includes(
+      buffer.subarray(0, 6).toString('ascii')
+    )
+  ) {
+    return 'GIF';
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'WEBP';
+  }
+
+  if (
+    buffer.length >= 4 &&
+    buffer.subarray(0, 4).toString('ascii') === '%PDF'
+  ) {
+    return 'PDF';
+  }
+
+  return 'UNKNOWN';
+}
+
+function extension(format) {
+  return {
+    PNG: 'png',
+    JPEG: 'jpg',
+    GIF: 'gif',
+    WEBP: 'webp',
+    PDF: 'pdf'
+  }[format] || 'bin';
+}
+
+function isPrivateIP(ip) {
+  const version = net.isIP(ip);
+
+  if (version === 4) {
+    const p = ip.split('.').map(Number);
 
     return (
-      a[0] === 0 ||
-      a[0] === 10 ||
-      a[0] === 127 ||
-      a[0] >= 224 ||
-      (a[0] === 169 && a[1] === 254) ||
-      (a[0] === 172 && a[1] >= 16 && a[1] <= 31) ||
-      (a[0] === 192 && a[1] === 168) ||
-      (a[0] === 100 && a[1] >= 64 && a[1] <= 127) ||
-      (
-        a[0] === 198 &&
-        (a[1] === 18 || a[1] === 19)
-      )
+      p[0] === 0 ||
+      p[0] === 10 ||
+      p[0] === 127 ||
+      p[0] >= 224 ||
+      (p[0] === 169 && p[1] === 254) ||
+      (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
+      (p[0] === 192 && p[1] === 168) ||
+      (p[0] === 100 && p[1] >= 64 && p[1] <= 127) ||
+      (p[0] === 198 && [18, 19].includes(p[1]))
     );
   }
 
-  if (net.isIP(ip) === 6) {
-    const s = ip.toLowerCase();
+  if (version === 6) {
+    const normalized = ip.toLowerCase();
+
+    if (normalized.startsWith('::ffff:')) {
+      const mapped = normalized.slice(7);
+      return net.isIP(mapped) === 4
+        ? isPrivateIP(mapped)
+        : true;
+    }
+
+    const first = normalized.split(':')[0];
+    const prefix = parseInt(first || '0', 16);
 
     return (
-      s === '::' ||
-      s === '::1' ||
-      s.startsWith('fc') ||
-      s.startsWith('fd') ||
-      s.startsWith('fe8') ||
-      s.startsWith('fe9') ||
-      s.startsWith('fea') ||
-      s.startsWith('feb') ||
-      s.startsWith('::ffff:')
+      normalized === '::' ||
+      normalized === '::1' ||
+      (prefix >= 0xfc00 && prefix <= 0xfdff) ||
+      (prefix >= 0xfe80 && prefix <= 0xfebf)
     );
   }
 
   return true;
 }
 
-async function safeURL(raw) {
+async function validateURL(raw) {
   const u = new URL(raw);
 
   if (
@@ -173,9 +255,7 @@ async function safeURL(raw) {
     u.hostname === 'localhost' ||
     u.hostname.endsWith('.local')
   ) {
-    throw Error(
-      'Public HTTPS hostname required'
-    );
+    throw new Error('Public HTTPS hostname required');
   }
 
   const addresses = await dns.lookup(
@@ -184,84 +264,75 @@ async function safeURL(raw) {
   );
 
   if (
-    !addresses.length ||
-    addresses.some(x => privateIP(x.address))
+    addresses.length === 0 ||
+    addresses.some(a => isPrivateIP(a.address))
   ) {
-    throw Error('Unsafe resolved address');
+    throw new Error('Unsafe DNS resolution');
   }
 
   return u;
 }
 
-// ------------------------------------------
-// DOWNLOAD RESOURCE
-// ------------------------------------------
+async function download(rawURL, maxBytes) {
+  let current = rawURL;
 
-async function get(raw, max) {
-  let current = raw;
-
-  for (let j = 0; j < 5; j++) {
-    const u = await safeURL(current);
-
+  for (let redirects = 0; redirects < 5; redirects++) {
+    const url = await validateURL(current);
     const controller = new AbortController();
 
-    const timeout = setTimeout(
+    const timer = setTimeout(
       () => controller.abort(),
-      15000
+      30000
     );
 
     try {
-      const response = await fetch(u, {
+      const response = await fetch(url.href, {
         redirect: 'manual',
         signal: controller.signal,
-
         headers: {
-          'User-Agent':
-            'WeatherTimeMachine-Test5/1.0',
+          'User-Agent': 'WeatherTimeMachine-Engine5-Test5/2.0',
           Accept: '*/*'
         }
       });
 
-      if (
-        [301, 302, 303, 307, 308]
-          .includes(response.status)
-      ) {
-        const location =
-          response.headers.get('location');
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location');
 
         if (!location) {
-          throw Error(
-            'Redirect without location'
-          );
+          throw new Error('Redirect without Location header');
         }
 
-        current = new URL(
-          location,
-          u
-        ).href;
-
+        current = new URL(location, url).href;
         await response.body?.cancel();
-
         continue;
       }
 
       if (!response.ok) {
-        throw Error(
-          `HTTP ${response.status}`
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const declaredLength = Number(
+        response.headers.get('content-length') || 0
+      );
+
+      if (declaredLength > maxBytes) {
+        await response.body?.cancel();
+
+        throw new Error(
+          `Declared response size ${declaredLength} exceeds ${maxBytes}`
         );
       }
 
       const chunks = [];
-      let bytes = 0;
+      let total = 0;
 
-      for await (
-        const chunk of response.body
-      ) {
-        bytes += chunk.length;
+      for await (const chunk of response.body) {
+        total += chunk.length;
 
-        if (bytes > max) {
-          throw Error(
-            'Response too large'
+        if (total > maxBytes) {
+          await response.body?.cancel();
+          throw new Error(
+            `Response too large: limit ${maxBytes} bytes`
           );
         }
 
@@ -269,204 +340,439 @@ async function get(raw, max) {
       }
 
       return {
-        url: current,
-        bytes,
-
-        contentType:
-          response.headers.get(
-            'content-type'
-          ) || '',
-
-        body: Buffer.concat(chunks)
+        url: url.href,
+        bytes: total,
+        contentType: response.headers.get('content-type') || '',
+        buffer: Buffer.concat(chunks)
       };
     } finally {
-      clearTimeout(timeout);
+      clearTimeout(timer);
     }
   }
 
-  throw Error('Too many redirects');
+  throw new Error('Too many redirects');
 }
 
-// ------------------------------------------
-// IDENTIFY FILE FORMAT
-// ------------------------------------------
+function saveEvidence(filename, buffer) {
+  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 
-function kind(buffer) {
-  if (
-    buffer.length > 8 &&
-    buffer.subarray(0, 8).equals(
-      Buffer.from([
-        137, 80, 78, 71,
-        13, 10, 26, 10
-      ])
-    )
-  ) {
-    return 'PNG';
-  }
+  const fullPath = path.join(EVIDENCE_DIR, filename);
 
-  if (
-    buffer.length > 3 &&
-    buffer[0] === 255 &&
-    buffer[1] === 216 &&
-    buffer[2] === 255
-  ) {
-    return 'JPEG';
-  }
+  fs.writeFileSync(fullPath, buffer);
+  report.evidenceFiles.push(fullPath);
 
-  if (
-    buffer.subarray(0, 6)
-      .toString('ascii')
-      .startsWith('GIF8')
-  ) {
-    return 'GIF';
-  }
-
-  if (
-    buffer.subarray(0, 4)
-      .toString() === 'RIFF' &&
-    buffer.subarray(8, 12)
-      .toString() === 'WEBP'
-  ) {
-    return 'WEBP';
-  }
-
-  if (
-    buffer.subarray(0, 4)
-      .toString() === '%PDF'
-  ) {
-    return 'PDF';
-  }
-
-  return 'UNKNOWN';
+  return fullPath;
 }
 
-// ------------------------------------------
-// EXTRACT PAGE TEXT
-// ------------------------------------------
-
-function textOnly(buffer) {
-  return buffer
-    .toString('utf8')
-
-    .replace(
-      /<script\b[^>]*>[\s\S]*?<\/script>/gi,
-      ' '
-    )
-
-    .replace(
-      /<style\b[^>]*>[\s\S]*?<\/style>/gi,
-      ' '
-    )
-
-    .replace(
-      /<[^>]+>/g,
-      ' '
-    )
-
-    .replace(
-      /&[a-z]+;/gi,
-      ' '
-    )
-
-    .replace(
-      /\s+/g,
-      ' '
-    )
-
-    .toLowerCase();
-}
-
-// ------------------------------------------
-// EVENT WORDS
-// ------------------------------------------
-
-function words(s) {
-  return s
+function normalize(text) {
+  return String(text)
     .toLowerCase()
-
-    .split(/[^a-z0-9]+/)
-
-    .filter(
-      x =>
-        x.length >= 4 &&
-        ![
-          'storm',
-          'superstorm',
-          'hurricane',
-          'tropical'
-        ].includes(x)
-    );
+    .replace(/\s+/g, ' ');
 }
 
-// ------------------------------------------
-// CONTEXT VERIFICATION
-// ------------------------------------------
+function plainText(html) {
+  return normalize(
+    html
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&[a-z0-9#]+;/gi, ' ')
+  );
+}
 
-function matchContext(
-  text,
-  eventName,
-  stateName,
-  eventYear
-) {
-  const eventWords = words(eventName);
+function eventKeywords(value) {
+  const generic = new Set([
+    'storm',
+    'superstorm',
+    'hurricane',
+    'tropical',
+    'weather',
+    'event'
+  ]);
+
+  return normalize(value)
+    .split(/[^a-z0-9]+/)
+    .filter(word => word.length >= 4 && !generic.has(word));
+}
+
+function contextMatches(text) {
+  const eventWords = eventKeywords(event);
 
   return {
     event:
       eventWords.length > 0 &&
-      eventWords.every(
-        word => text.includes(word)
-      ),
+      eventWords.every(word => text.includes(word)),
 
     state:
-      text.includes(
-        stateName.toLowerCase()
-      ),
+      text.includes(normalize(state)),
 
     year:
-      text.includes(eventYear),
+      text.includes(year),
 
-    map:
-      /\b(map|radar|satellite|rainfall|storm surge|track|wind field|weather chart|meteorological)\b/i
+    mapTerminology:
+      /\b(map|maps|radar|satellite|rainfall|storm surge|weather chart|meteorological|wind field|storm track)\b/i
         .test(text)
   };
 }
 
-// ------------------------------------------
-// NEGATIVE CONTROL TESTS
-// ------------------------------------------
+function runNegativeControls() {
+  const cases = {
+    unrelated_weather_map:
+      'Hurricane Katrina Louisiana 2005 weather map',
 
-function negativeControl(
-  label,
-  context
-) {
-  const matches = matchContext(
-    context,
-    event,
-    state,
-    year
-  );
+    ordinary_photograph:
+      `${event} ${state} ${year} storm damage photograph`,
 
-  const pass = !(
-    matches.event &&
-    matches.state &&
-    matches.year &&
-    matches.map
-  );
-
-  result.negativeControls[label] = {
-    status: pass ? 'pass' : 'fail',
-
-    context,
-
-    reason: pass
-      ? 'Insufficient metadata is not automatically accepted'
-      : 'Weak metadata-only classifier would be fooled'
+    incorrect_year:
+      `${event} ${state} 1999 weather map`
   };
+
+  for (const [name, description] of Object.entries(cases)) {
+    const matches = contextMatches(normalize(description));
+
+    const falselyAccepted =
+      matches.event &&
+      matches.state &&
+      matches.year &&
+      matches.mapTerminology;
+
+    report.negativeControls[name] = {
+      status: falselyAccepted ? 'fail' : 'pass',
+      description,
+      matches,
+      reason: falselyAccepted
+        ? 'Metadata rule falsely accepted this control'
+        : 'Metadata rule did not accept this control',
+      limitation:
+        'Synthetic text-only negative control; no image pixels examined'
+    };
+  }
 }
 
-// ------------------------------------------
-// MAIN TEST
-// ------------------------------------------
+function extractLinks(html, baseURL) {
+  const links = [];
+  const regex = /\b(?:href|src)\s*=\s*["']([^"']+)["']/gi;
+
+  let match;
+
+  while ((match = regex.exec(html)) !== null) {
+    try {
+      links.push(
+        new URL(
+          match[1].replace(/&amp;/g, '&'),
+          baseURL
+        ).href
+      );
+    } catch {
+      // Ignore malformed links.
+    }
+  }
+
+  return links;
+}
+
+function provenanceCheck(html, pageURL, candidateURL) {
+  const links = extractLinks(html, pageURL);
+
+  const candidate = new URL(candidateURL);
+  const pathname = candidate.pathname;
+
+  const explicitLinks = links.filter(link => {
+    try {
+      const u = new URL(link);
+
+      return (
+        u.origin === candidate.origin &&
+        u.pathname === pathname &&
+        u.search === candidate.search
+      );
+    } catch {
+      return false;
+    }
+  });
+
+  const result = {
+    candidateURL,
+    explicitLinkCount: explicitLinks.length,
+    explicitLinks: explicitLinks.slice(0, 10),
+    evidenceLevel: explicitLinks.length
+      ? 'direct_html_link'
+      : 'not_established'
+  };
+
+  check(
+    'image_source_link',
+    explicitLinks.length
+      ? 'supporting_evidence'
+      : 'not_verified',
+    explicitLinks.length
+      ? 'The source HTML explicitly references the candidate image URL'
+      : 'No exact image URL reference found in source HTML',
+    result
+  );
+
+  check(
+    'image_source_provenance',
+    'not_verified',
+    'An HTML link alone does not establish authorship, date, original caption or historical authenticity'
+  );
+
+  return result;
+}
+
+async function testImage() {
+  try {
+    const response = await download(
+      imageURL,
+      LIMITS.image
+    );
+
+    const format = detectFormat(response.buffer);
+
+    report.image = {
+      url: response.url,
+      bytes: response.bytes,
+      contentType: response.contentType,
+      format,
+      sha256: sha256(response.buffer)
+    };
+
+    check(
+      'image_download',
+      'pass',
+      'Candidate image downloaded successfully'
+    );
+
+    const allowed = ['JPEG', 'PNG', 'GIF', 'WEBP'];
+
+    if (!allowed.includes(format)) {
+      check(
+        'image_format',
+        'fail',
+        `Unsupported candidate image signature: ${format}`
+      );
+
+      report.errors.push('Invalid candidate image format');
+      return;
+    }
+
+    check(
+      'image_format',
+      'pass',
+      `Recognized image format: ${format}`
+    );
+
+    const filename = `candidate-map.${extension(format)}`;
+
+    const saved = saveEvidence(
+      filename,
+      response.buffer
+    );
+
+    report.image.savedFile = saved;
+
+    check(
+      'visual_evidence_saved',
+      'pass',
+      `Original image saved for independent visual review: ${saved}`
+    );
+
+    check(
+      'actual_visual_inspection',
+      'not_verified',
+      'Image saved, but no visual classifier or human reviewer has inspected it'
+    );
+  } catch (error) {
+    check(
+      'image_download',
+      'fail',
+      error.message
+    );
+
+    report.errors.push(`Image: ${error.message}`);
+  }
+}
+
+async function testSource() {
+  try {
+    const response = await download(
+      sourceURL,
+      LIMITS.webpage
+    );
+
+    const html = response.buffer.toString('utf8');
+
+    saveEvidence(
+      'source-page.html',
+      response.buffer
+    );
+
+    const matches = contextMatches(
+      plainText(html)
+    );
+
+    report.source = {
+      url: response.url,
+      bytes: response.bytes,
+      contentType: response.contentType,
+      context: matches
+    };
+
+    check(
+      'source_download',
+      'pass',
+      'Source webpage downloaded'
+    );
+
+    for (const [name, matched] of Object.entries(matches)) {
+      check(
+        `source_${name}`,
+        matched ? 'supporting_evidence' : 'not_verified',
+        matched
+          ? 'Matching terminology appears on the source webpage'
+          : 'Matching terminology not established'
+      );
+    }
+
+    report.provenance = provenanceCheck(
+      html,
+      response.url,
+      report.image?.url || imageURL
+    );
+
+    check(
+      'source_credibility',
+      'not_verified',
+      'Domain and page retrieval alone do not establish original authorship or archival provenance'
+    );
+  } catch (error) {
+    check(
+      'source_download',
+      'fail',
+      error.message
+    );
+
+    report.errors.push(`Source: ${error.message}`);
+  }
+}
+
+async function testReference() {
+  try {
+    const response = await download(
+      referenceURL,
+      LIMITS.reference
+    );
+
+    const format = detectFormat(response.buffer);
+
+    report.reference = {
+      url: response.url,
+      bytes: response.bytes,
+      format,
+      sha256: sha256(response.buffer)
+    };
+
+    if (format !== 'PDF') {
+      check(
+        'reference_download',
+        'fail',
+        `Expected PDF, received ${format}`
+      );
+
+      report.errors.push('Historical reference is not a PDF');
+      return;
+    }
+
+    const saved = saveEvidence(
+      'historical-reference.pdf',
+      response.buffer
+    );
+
+    report.reference.savedFile = saved;
+
+    check(
+      'reference_download',
+      'pass',
+      `Historical reference downloaded (${response.bytes} bytes)`
+    );
+
+    check(
+      'reference_historical_content',
+      'not_verified',
+      'PDF downloaded, but its text, figures and historical statements have not been examined'
+    );
+
+    check(
+      'reference_image_match',
+      'not_verified',
+      'No candidate-image-to-reference-figure comparison performed'
+    );
+  } catch (error) {
+    check(
+      'reference_download',
+      'not_verified',
+      error.message
+    );
+
+    report.errors.push(`Reference: ${error.message}`);
+  }
+}
+
+function finalize() {
+  check(
+    'historical_event_authenticity',
+    'not_verified',
+    'Event/date/geographic authenticity requires inspection of original figure and supporting archive records'
+  );
+
+  check(
+    'map_visual_authenticity',
+    'not_verified',
+    'No image-content verification has been completed'
+  );
+
+  check(
+    'final_authenticity',
+    'not_verified',
+    'Candidate has not satisfied all historical authenticity requirements'
+  );
+
+  const controlFailures = Object.values(
+    report.negativeControls
+  ).filter(item => item.status === 'fail');
+
+  if (controlFailures.length) {
+    report.errors.push(
+      `${controlFailures.length} negative controls failed`
+    );
+  }
+
+  report.execution = report.errors.length
+    ? 'incomplete'
+    : 'completed';
+
+  report.status = 'not_evaluated';
+
+  report.score = null;
+  report.grade = null;
+  report.finalGrade = false;
+
+  report.summary = {
+    executionCompleted: report.errors.length === 0,
+    automatedChecksPassed: Object.values(
+      report.checks
+    ).filter(x => x.status === 'pass').length,
+    negativeControlsPassed: Object.values(
+      report.negativeControls
+    ).filter(x => x.status === 'pass').length,
+    negativeControlsTotal: Object.keys(
+      report.negativeControls
+    ).length,
+    historicalAuthenticityVerified: false,
+    finalGradeAvailable: false,
+    pendingHumanOrImageAnalysis: true
+  };
+}
 
 async function main() {
   if (
@@ -474,280 +780,39 @@ async function main() {
     !state ||
     !/^\d{4}$/.test(year)
   ) {
-    throw Error(
-      'Invalid event/state/year'
-    );
+    throw new Error('Invalid event, state or year');
   }
 
-  // CONTROL 1:
-  // Unrelated hurricane map.
+  runNegativeControls();
 
-  negativeControl(
-    'unrelated_weather_map',
-    'Hurricane Katrina Louisiana 2005 weather map'
-  );
-
-  // CONTROL 2:
-  // Ordinary storm damage photograph.
-
-  negativeControl(
-    'ordinary_photograph',
-    `${event} ${state} ${year} storm damage photograph`
-  );
-
-  // CONTROL 3:
-  // Incorrect historical year.
-
-  negativeControl(
-    'misdated_map',
-    `${event} ${state} 1999 weather map`
-  );
-
-  let image = null;
-  let page = null;
-  let reference = null;
-
-  // ----------------------------------------
-  // DOWNLOAD ORIGINAL IMAGE
-  // ----------------------------------------
-
-  try {
-    image = await get(
-      imageURL,
-      12 * 1024 * 1024
-    );
-
-    const format = kind(image.body);
-
-    result.image = {
-      url: image.url,
-      bytes: image.bytes,
-      format,
-
-      sha256:
-        crypto.createHash('sha256')
-          .update(image.body)
-          .digest('hex')
-    };
-
-    mark(
-      'image_download',
-      'pass',
-      'Original file downloaded'
-    );
-
-    mark(
-      'image_file',
-      format === 'UNKNOWN'
-        ? 'fail'
-        : 'pass',
-      `Signature: ${format}`
-    );
-  } catch (error) {
-    mark(
-      'image_download',
-      'fail',
-      error.message
-    );
-
-    result.errors.push(
-      'Image: ' + error.message
-    );
-  }
-
-  // ----------------------------------------
-  // VERIFY SOURCE PAGE
-  // ----------------------------------------
-
-  try {
-    page = await get(
-      sourceURL,
-      2 * 1024 * 1024
-    );
-
-    const text = textOnly(
-      page.body
-    );
-
-    const context = matchContext(
-      text,
-      event,
-      state,
-      year
-    );
-
-    result.source = {
-      url: page.url,
-      bytes: page.bytes,
-      context
-    };
-
-    mark(
-      'source_download',
-      'pass',
-      'Source page downloaded'
-    );
-
-    for (
-      const key of Object.keys(context)
-    ) {
-      mark(
-        'source_' + key,
-
-        context[key]
-          ? 'pass'
-          : 'not_verified',
-
-        context[key]
-          ? 'Keyword evidence present on source page'
-          : 'Not established by page text'
-      );
-    }
-
-    const filePart = image
-      ? new URL(image.url)
-          .pathname.split('/').pop()
-      : '';
-
-    const explicit =
-      filePart &&
-      filePart.length >= 8 &&
-      text.includes(
-        filePart.toLowerCase()
-      );
-
-    mark(
-      'image_source_link',
-
-      explicit
-        ? 'supporting_evidence'
-        : 'not_verified',
-
-      explicit
-        ? 'Image filename appears in page text; provenance still requires confirmation'
-        : 'No explicit image-to-page linkage established'
-    );
-  } catch (error) {
-    mark(
-      'source_download',
-      'fail',
-      error.message
-    );
-
-    result.errors.push(
-      'Source: ' + error.message
-    );
-  }
-
-  // ----------------------------------------
-  // INDEPENDENT HISTORICAL REFERENCE
-  // ----------------------------------------
-
-  try {
-    reference = await get(
-      referenceURL,
-      5 * 1024 * 1024
-    );
-
-    const format = kind(
-      reference.body
-    );
-
-    result.reference = {
-      url: reference.url,
-      bytes: reference.bytes,
-      format
-    };
-
-    mark(
-      'reference_download',
-      'pass',
-      `Independent historical reference downloaded (${format})`
-    );
-  } catch (error) {
-    mark(
-      'reference_download',
-      'not_verified',
-      error.message
-    );
-
-    result.errors.push(
-      'Reference: ' + error.message
-    );
-  }
-
-  // ----------------------------------------
-  // HONEST VERIFICATION LIMITATIONS
-  // ----------------------------------------
-
-  mark(
-    'visual_weather_map',
-    'not_verified',
-    'No image-content classifier or human visual review performed'
-  );
-
-  mark(
-    'historical_image_authenticity',
-    'not_verified',
-    'Image/date/location must be verified against original figure caption or archive record'
-  );
-
-  mark(
-    'source_credibility',
-    'not_verified',
-    'Source identity and document provenance require independent corroboration'
-  );
-
-  result.status =
-    result.errors.length
-      ? 'incomplete'
-      : 'not_evaluated';
+  await testImage();
+  await testSource();
+  await testReference();
 }
 
-// ------------------------------------------
-// EXECUTE AND SAVE REPORT
-// ------------------------------------------
-
-main()
-  .catch(error => {
-    result.errors.push(
-      'Unexpected: ' + error.message
+(async () => {
+  try {
+    await main();
+  } catch (error) {
+    report.errors.push(
+      `Unexpected: ${error.message}`
     );
+  } finally {
+    finalize();
 
-    result.status = 'incomplete';
-  })
-
-  .finally(() => {
     fs.writeFileSync(
-      OUT,
-      JSON.stringify(
-        result,
-        null,
-        2
-      ) + '\n'
+      REPORT,
+      JSON.stringify(report, null, 2) + '\n'
     );
 
     console.log(
-      JSON.stringify(
-        result,
-        null,
-        2
-      )
+      JSON.stringify(report, null, 2)
     );
 
-    console.log(
-      'Report saved:',
-      OUT
-    );
+    console.log(`Report saved: ${REPORT}`);
 
-    if (
-      result.errors.length ||
-      Object.values(
-        result.negativeControls
-      ).some(
-        x => x.status === 'fail'
-      )
-    ) {
+    if (report.errors.length > 0) {
       process.exitCode = 1;
     }
-  });
+  }
+})();
