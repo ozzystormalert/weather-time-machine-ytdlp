@@ -3,72 +3,117 @@
 
 /*
  * WEATHER TIME MACHINE — ENGINE 5
- * VERSION 6.4
+ * VERSION 6.5
  *
- * TARGETED HISTORICAL WEATHER MAP RETRIEVAL REPAIR
+ * TARGETED HTTP 429 RATE-LIMIT REPAIR
  *
  * Node.js 22
  * No external packages
- * No API keys
+ * No API key
  * No Bing scraping
  *
- * Preserves:
- *   /health
- *   /audit5
- *   Bing Images research link
- *   Wikimedia Commons discovery
- *   Blogger Step 8A compatibility
- *   Engines 1–4 unchanged
+ * REPAIR:
+ * - Sequential Wikimedia Commons requests
+ * - Retry-After support
+ * - Exponential backoff with jitter
+ * - Fewer search queries
+ * - Fewer metadata requests
+ * - Search and metadata in one API request
+ * - In-memory result caching
+ * - Shared request queue
+ * - Detailed diagnostics
  *
- * New:
- *   Commons API connectivity diagnostics
- *   Controlled concurrent searches
- *   HTTP and timeout error reporting
- *   Map metadata qualification
- *   Photograph rejection
+ * PRESERVES:
+ * - /health
+ * - /audit5
+ * - Bing Images research links
+ * - Wikimedia Commons discovery
+ * - Blogger Step 8A compatibility
+ * - Engines 1–4 unchanged
  *
  * IMPORTANT:
+ * A search result is not authenticated evidence.
  * Metadata qualification is not visual verification.
- * No A–F grades without authenticated historical maps.
+ * Final A–F grading remains disabled.
  */
 
 const http = require("node:http");
 
-const VERSION = "6.4";
+const VERSION = "6.5";
+
 const PORT = Number(process.env.PORT) || 10000;
 const HOST = "0.0.0.0";
 
 const COMMONS_API =
   "https://commons.wikimedia.org/w/api.php";
 
-const TIMEOUT_MS = 10000;
-const CONCURRENCY = 3;
-const SEARCH_LIMIT = 18;
-const MAX_FILES = 70;
-
 const USER_AGENT =
-  "WeatherTimeMachineEngine5/6.4 " +
-  "(historical map research; contact via GitHub repository)";
+  "WeatherTimeMachineEngine5/6.5 " +
+  "(historical weather map research; " +
+  "https://github.com/ozzystormalert/weather-time-machine-ytdlp)";
+
+const CONFIG = {
+  timeoutMs: 15000,
+
+  // Keep requests modest.
+  maxSearchQueries: 3,
+  searchLimit: 10,
+  maxCandidates: 20,
+
+  // Minimum spacing between requests.
+  requestIntervalMs: 2500,
+
+  // Maximum retry attempts after first request.
+  maxRetries: 2,
+
+  // Retry backoff.
+  initialBackoffMs: 5000,
+  maximumBackoffMs: 30000,
+
+  // Respect Retry-After, but bound the wait.
+  maximumRetryAfterMs: 60000,
+
+  // Cache results to avoid repeated API traffic.
+  cacheTtlMs: 30 * 60 * 1000,
+
+  // Avoid unlimited memory use.
+  maximumCacheEntries: 100,
+
+  // Limit incoming simultaneous audits.
+  maximumActiveAudits: 2
+};
 
 // ============================================
-// HTTP RESPONSES
+// HTTP RESPONSE
 // ============================================
 
-function respond(res, status, data) {
+function respond(res, status, payload) {
+  if (res.headersSent) return;
+
+  const body = JSON.stringify(payload, null, 2);
+
   res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
+    "Content-Type":
+      "application/json; charset=utf-8",
+
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+
+    "Access-Control-Allow-Methods":
+      "GET, OPTIONS",
+
+    "Access-Control-Allow-Headers":
+      "Content-Type",
+
     "Cache-Control": "no-store",
+
     "X-Content-Type-Options": "nosniff"
   });
 
-  res.end(JSON.stringify(data, null, 2));
+  res.end(body);
 }
 
 // ============================================
-// TEXT UTILITIES
+// UTILITIES
 // ============================================
 
 function normalize(value) {
@@ -94,6 +139,12 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function sleep(ms) {
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
+  );
+}
+
 function buildUrl(base, params) {
   const url = new URL(base);
 
@@ -111,79 +162,103 @@ function bingImagesUrl(query) {
   );
 }
 
-// ============================================
-// HISTORICAL EVENT ALIASES
-// ============================================
-
-function eventAliases(event, year) {
-  const names = [event];
-
-  if (/^superstorm\s+/i.test(event)) {
-    names.push(
-      event.replace(/^superstorm\s+/i, "")
-    );
-  }
-
-  if (/^hurricane\s+/i.test(event)) {
-    names.push(
-      event.replace(/^hurricane\s+/i, "")
-    );
-  }
-
-  if (
-    /\bsandy\b/i.test(event) &&
-    (!year || year === "2012")
-  ) {
-    names.push(
-      "Hurricane Sandy",
-      "Superstorm Sandy",
-      "Sandy"
-    );
-  }
-
-  return unique(
-    names.map(normalize)
+function googleSearchUrl(query) {
+  return buildUrl(
+    "https://www.google.com/search",
+    { q: query }
   );
 }
 
 // ============================================
-// CONTROLLED SEARCH QUERIES
+// GLOBAL REQUEST QUEUE
 // ============================================
 
-function buildQueries(event, state, year) {
-  const aliases = eventAliases(event, year);
-  const queries = [];
+let requestQueue = Promise.resolve();
+let lastRequestTime = 0;
 
-  for (const name of aliases) {
-    queries.push(
-      `${name} storm track`,
-      `${name} weather map`,
-      `${name} radar`
+function queueCommonsRequest(task) {
+  const job = requestQueue.then(async () => {
+    const elapsed =
+      Date.now() - lastRequestTime;
+
+    const wait = Math.max(
+      0,
+      CONFIG.requestIntervalMs - elapsed
     );
 
-    if (year) {
-      queries.push(
-        `${name} ${year} track`
-      );
+    if (wait > 0) {
+      await sleep(wait);
     }
-  }
 
-  queries.push(
-    `${event} ${state} map`
-  );
+    lastRequestTime = Date.now();
 
-  return unique(queries).slice(0, 10);
+    return task();
+  });
+
+  // Preserve queue even after failures.
+  requestQueue = job.catch(() => {});
+
+  return job;
 }
 
 // ============================================
-// WIKIMEDIA COMMONS API
+// RETRY-AFTER PARSING
 // ============================================
 
-async function commonsRequest(params) {
+function parseRetryAfter(value) {
+  if (!value) return null;
+
+  const seconds = Number(value);
+
+  if (Number.isFinite(seconds)) {
+    return Math.max(
+      0,
+      Math.round(seconds * 1000)
+    );
+  }
+
+  const date = Date.parse(value);
+
+  if (Number.isFinite(date)) {
+    return Math.max(
+      0,
+      date - Date.now()
+    );
+  }
+
+  return null;
+}
+
+// ============================================
+// WIKIMEDIA API ERROR
+// ============================================
+
+class CommonsError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+
+    this.name = "CommonsError";
+
+    this.status =
+      details.status ?? null;
+
+    this.retryAfterMs =
+      details.retryAfterMs ?? null;
+
+    this.retryable =
+      details.retryable ?? false;
+  }
+}
+
+// ============================================
+// SINGLE HTTP ATTEMPT
+// ============================================
+
+async function commonsAttempt(params) {
   const url = buildUrl(COMMONS_API, {
+    action: "query",
     format: "json",
     formatversion: "2",
-    origin: "*",
     ...params
   });
 
@@ -191,7 +266,7 @@ async function commonsRequest(params) {
 
   const timer = setTimeout(
     () => controller.abort(),
-    TIMEOUT_MS
+    CONFIG.timeoutMs
   );
 
   try {
@@ -200,21 +275,48 @@ async function commonsRequest(params) {
         Accept: "application/json",
         "User-Agent": USER_AGENT
       },
+
       signal: controller.signal
     });
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status} ${response.statusText}`
+      const retryAfterMs =
+        parseRetryAfter(
+          response.headers.get("retry-after")
+        );
+
+      throw new CommonsError(
+        `HTTP ${response.status}`,
+        {
+          status: response.status,
+
+          retryAfterMs,
+
+          retryable:
+            response.status === 429 ||
+            response.status === 500 ||
+            response.status === 502 ||
+            response.status === 503 ||
+            response.status === 504
+        }
       );
     }
 
     const data = await response.json();
 
     if (data.error) {
-      throw new Error(
-        `API ${data.error.code || "error"}: ` +
-        `${data.error.info || "Unknown API error"}`
+      const code =
+        data.error.code || "unknown";
+
+      throw new CommonsError(
+        `API ${code}: ${
+          data.error.info || "Unknown error"
+        }`,
+        {
+          retryable:
+            code === "maxlag" ||
+            code === "ratelimited"
+        }
       );
     }
 
@@ -222,8 +324,11 @@ async function commonsRequest(params) {
 
   } catch (error) {
     if (error.name === "AbortError") {
-      throw new Error(
-        `Timeout after ${TIMEOUT_MS}ms`
+      throw new CommonsError(
+        `Timeout after ${CONFIG.timeoutMs}ms`,
+        {
+          retryable: true
+        }
       );
     }
 
@@ -235,75 +340,157 @@ async function commonsRequest(params) {
 }
 
 // ============================================
-// CONTROLLED CONCURRENT EXECUTION
+// RETRY LOGIC
 // ============================================
 
-async function runBatch(items, limit, task) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
+async function commonsRequest(params, label) {
+  const attempts = [];
 
-  async function worker() {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
+  for (
+    let attempt = 0;
+    attempt <= CONFIG.maxRetries;
+    attempt++
+  ) {
+    try {
+      const data = await queueCommonsRequest(
+        () => commonsAttempt(params)
+      );
 
-      try {
-        results[index] = {
-          ok: true,
-          value: await task(items[index])
-        };
-      } catch (error) {
-        results[index] = {
+      return {
+        ok: true,
+        data,
+        attempts,
+        attemptCount: attempt + 1
+      };
+
+    } catch (error) {
+      const retryable =
+        error.retryable === true;
+
+      const entry = {
+        attempt: attempt + 1,
+        error: String(
+          error.message || error
+        ),
+        status: error.status ?? null,
+        retryable
+      };
+
+      attempts.push(entry);
+
+      if (
+        !retryable ||
+        attempt >= CONFIG.maxRetries
+      ) {
+        return {
           ok: false,
-          error: String(error.message || error)
+          error: entry.error,
+          attempts,
+          attemptCount: attempt + 1
         };
       }
+
+      const exponential =
+        CONFIG.initialBackoffMs *
+        Math.pow(2, attempt);
+
+      const jitter =
+        Math.floor(Math.random() * 1000);
+
+      const requestedWait =
+        error.retryAfterMs ?? 0;
+
+      const waitMs = Math.min(
+        CONFIG.maximumRetryAfterMs,
+        Math.max(
+          exponential + jitter,
+          requestedWait
+        )
+      );
+
+      attempts[
+        attempts.length - 1
+      ].waitMs = waitMs;
+
+      // Waiting happens inside the shared queue,
+      // preventing other audits from immediately
+      // bypassing the rate-limit cooldown.
+      await queueCommonsRequest(
+        () => sleep(waitMs)
+      );
     }
   }
 
-  const workerCount = Math.min(
-    limit,
-    items.length
-  );
-
-  await Promise.all(
-    Array.from(
-      { length: workerCount },
-      () => worker()
-    )
-  );
-
-  return results;
+  return {
+    ok: false,
+    error: "Retry limit exceeded.",
+    attempts
+  };
 }
 
 // ============================================
-// COMMONS CONNECTIVITY TEST
+// EVENT ALIASES
 // ============================================
 
-async function checkCommonsConnectivity() {
-  try {
-    const data = await commonsRequest({
-      action: "query",
-      meta: "siteinfo",
-      siprop: "general"
-    });
+function eventAliases(event, year) {
+  const aliases = [event];
 
-    return {
-      ok: true,
-      site:
-        data.query?.general?.sitename ||
-        "Wikimedia Commons"
-    };
-
-  } catch (error) {
-    return {
-      ok: false,
-      error: String(error.message || error)
-    };
+  if (/^superstorm\s+/i.test(event)) {
+    aliases.push(
+      event.replace(/^superstorm\s+/i, "")
+    );
   }
+
+  if (/^hurricane\s+/i.test(event)) {
+    aliases.push(
+      event.replace(/^hurricane\s+/i, "")
+    );
+  }
+
+  if (
+    /\bsandy\b/i.test(event) &&
+    (!year || year === "2012")
+  ) {
+    aliases.push(
+      "Hurricane Sandy",
+      "Superstorm Sandy",
+      "Sandy"
+    );
+  }
+
+  return unique(
+    aliases.map(normalize)
+  );
 }
 
 // ============================================
-// WEATHER MAP INDICATORS
+// FOCUSED SEARCH QUERIES
+// ============================================
+
+function buildQueries(event, state, year) {
+  const aliases = eventAliases(
+    event,
+    year
+  );
+
+  const shortName =
+    aliases.find(
+      name =>
+        name.length < event.length
+    ) || event;
+
+  return unique([
+    `${shortName} storm track`,
+    `${shortName} weather map`,
+    `${event} ${year || ""} map`.trim()
+  ]).slice(
+    0,
+    CONFIG.maxSearchQueries
+  );
+}
+
+// ============================================
+// WEATHER MAP FILTERS
 // ============================================
 
 const MAP_TERMS = [
@@ -324,7 +511,6 @@ const MAP_TERMS = [
   "wind field",
   "precipitation map",
   "pressure map",
-  "track of",
   "storm path"
 ];
 
@@ -344,7 +530,81 @@ const PHOTO_TERMS = [
 ];
 
 // ============================================
-// MAP QUALIFICATION
+// CANDIDATE EXTRACTION
+// ============================================
+
+function extractCandidate(page) {
+  const info =
+    page.imageinfo?.[0];
+
+  if (!info) return null;
+
+  const mime = String(
+    info.mime || ""
+  ).toLowerCase();
+
+  if (!mime.startsWith("image/")) {
+    return null;
+  }
+
+  if (!info.url) {
+    return null;
+  }
+
+  const metadata =
+    info.extmetadata || {};
+
+  return {
+    title: page.title,
+
+    url:
+      info.descriptionurl ||
+      `https://commons.wikimedia.org/wiki/${
+        encodeURIComponent(
+          page.title.replace(/ /g, "_")
+        )
+      }`,
+
+    sourceUrl:
+      info.descriptionurl || null,
+
+    imageUrl: info.url,
+
+    thumbnailUrl:
+      info.thumburl || info.url,
+
+    provider:
+      "Wikimedia Commons",
+
+    mime,
+
+    width:
+      info.width || null,
+
+    height:
+      info.height || null,
+
+    description: stripHtml(
+      metadata.ImageDescription?.value
+    ),
+
+    date: stripHtml(
+      metadata.DateTimeOriginal?.value ||
+      metadata.DateTime?.value
+    ),
+
+    artist: stripHtml(
+      metadata.Artist?.value
+    ),
+
+    license: stripHtml(
+      metadata.LicenseShortName?.value
+    )
+  };
+}
+
+// ============================================
+// METADATA QUALIFICATION
 // ============================================
 
 function qualifyCandidate(
@@ -372,14 +632,21 @@ function qualifyCandidate(
     term => text.includes(term)
   );
 
-  const aliases = eventAliases(event, year);
+  const aliases =
+    eventAliases(event, year);
 
-  const eventMatch = aliases.some(
-    name => text.includes(name.toLowerCase())
-  );
+  const eventMatch =
+    aliases.some(
+      name =>
+        text.includes(
+          name.toLowerCase()
+        )
+    );
 
   const stateMatch =
-    text.includes(state.toLowerCase());
+    text.includes(
+      state.toLowerCase()
+    );
 
   const yearMatch = year
     ? text.includes(year)
@@ -393,19 +660,22 @@ function qualifyCandidate(
 
   if (
     photoHits.length > 0 &&
-    mapHits.length === 0 &&
-    !mapTitle
+    !mapTitle &&
+    mapHits.length === 0
   ) {
-    qualification = "rejected_photo";
+    qualification =
+      "rejected_photo";
 
   } else if (
     mapHits.length === 0 &&
     !mapTitle
   ) {
-    qualification = "rejected_non_map";
+    qualification =
+      "rejected_non_map";
 
   } else {
-    qualification = "possible_map";
+    qualification =
+      "possible_map";
   }
 
   const rawScore =
@@ -416,118 +686,96 @@ function qualifyCandidate(
     (yearMatch ? 10 : 0) -
     photoHits.length * 20;
 
-  const relevanceScore = Math.max(
-    0,
-    Math.min(100, rawScore)
-  );
-
-  const reasons = [
-    qualification === "possible_map"
-      ? "Possible map based on metadata; visual verification required."
-      : "Not qualified as a weather map by metadata."
-  ];
-
-  if (!eventMatch) {
-    reasons.push(
-      "Event not confirmed by metadata."
-    );
-  }
-
-  if (!stateMatch) {
-    reasons.push(
-      "State not confirmed by metadata."
-    );
-  }
-
-  if (year && !yearMatch) {
-    reasons.push(
-      "Year not confirmed by metadata."
-    );
-  }
-
   return {
     ...candidate,
 
     qualification,
-    relevanceScore,
 
-    mapTermsFound: mapHits,
-    photoTermsFound: photoHits,
+    relevanceScore:
+      Math.max(
+        0,
+        Math.min(
+          100,
+          rawScore
+        )
+      ),
 
-    eventMetadataMatch: eventMatch,
-    geographyMetadataMatch: stateMatch,
-    yearMetadataMatch: yearMatch,
+    mapTermsFound:
+      mapHits,
+
+    photoTermsFound:
+      photoHits,
+
+    eventMetadataMatch:
+      eventMatch,
+
+    geographyMetadataMatch:
+      stateMatch,
+
+    yearMetadataMatch:
+      yearMatch,
 
     visualVerified: false,
     provenanceVerified: false,
 
-    authenticityStatus: "not_verified",
+    authenticityStatus:
+      "not_verified",
+
     acceptedForGrading: false,
 
-    reasons
+    reasons: [
+      qualification === "possible_map"
+        ? "Possible map based on metadata."
+        : "Not qualified as a weather map.",
+
+      "Visual and historical verification required."
+    ]
   };
 }
 
 // ============================================
-// EXTRACT COMMONS IMAGE METADATA
+// IN-MEMORY AUDIT CACHE
 // ============================================
 
-function extractCandidate(page) {
-  const info = page.imageinfo?.[0];
+const auditCache = new Map();
+const activeAudits = new Map();
 
-  if (!info) return null;
+function getCachedAudit(key) {
+  const item = auditCache.get(key);
 
-  const mime = String(
-    info.mime || ""
-  ).toLowerCase();
+  if (!item) return null;
 
-  if (!mime.startsWith("image/")) {
+  if (
+    Date.now() >= item.expiresAt
+  ) {
+    auditCache.delete(key);
     return null;
   }
 
-  if (!info.url || !info.descriptionurl) {
-    return null;
+  return item.data;
+}
+
+function setCachedAudit(key, data) {
+  if (
+    auditCache.size >=
+    CONFIG.maximumCacheEntries
+  ) {
+    const oldest =
+      auditCache.keys().next().value;
+
+    auditCache.delete(oldest);
   }
 
-  const metadata = info.extmetadata || {};
-
-  return {
-    title: page.title,
-
-    url: info.descriptionurl,
-    sourceUrl: info.descriptionurl,
-    imageUrl: info.url,
-    thumbnailUrl:
-      info.thumburl || info.url,
-
-    provider: "Wikimedia Commons",
-
-    mime,
-
-    width: info.width || null,
-    height: info.height || null,
-
-    description: stripHtml(
-      metadata.ImageDescription?.value
-    ),
-
-    date: stripHtml(
-      metadata.DateTimeOriginal?.value ||
-      metadata.DateTime?.value
-    ),
-
-    artist: stripHtml(
-      metadata.Artist?.value
-    ),
-
-    license: stripHtml(
-      metadata.LicenseShortName?.value
-    )
-  };
+  auditCache.set(key, {
+    data,
+    expiresAt:
+      Date.now() +
+      CONFIG.cacheTtlMs
+  });
 }
 
 // ============================================
-// HISTORICAL MAP DISCOVERY
+// COMMONS DISCOVERY
 // ============================================
 
 async function discoverMaps(
@@ -541,159 +789,107 @@ async function discoverMaps(
     year
   );
 
-  const connectivity =
-    await checkCommonsConnectivity();
-
   const diagnostics = [];
+  const pagesByTitle = new Map();
 
-  if (!connectivity.ok) {
-    return {
-      connectivity,
-      queries,
+  let successfulQueries = 0;
+  let failedQueries = 0;
+  let totalSearchHits = 0;
 
-      diagnostics: [{
-        stage: "connectivity",
-        ok: false,
-        error: connectivity.error
-      }],
+  // Each query retrieves file metadata
+  // directly, avoiding separate metadata batches.
 
-      discoveryCompleted: false,
-      totalRetrieved: 0,
-      titlesFound: 0,
+  for (const query of queries) {
+    const result = await commonsRequest(
+      {
+        generator: "search",
 
-      candidates: [],
-      rejected: []
-    };
-  }
+        gsrsearch: query,
+        gsrnamespace: "6",
+        gsrlimit:
+          CONFIG.searchLimit,
 
-  // Search using controlled concurrency.
+        prop: "imageinfo",
 
-  const searchResults = await runBatch(
-    queries,
-    CONCURRENCY,
+        iiprop:
+          "url|mime|size|extmetadata",
 
-    async query => {
-      const data = await commonsRequest({
-        action: "query",
-        list: "search",
-        srsearch: query,
-        srnamespace: "6",
-        srlimit: String(SEARCH_LIMIT)
-      });
+        iiurlwidth: "700"
+      },
 
-      return data.query?.search || [];
-    }
-  );
-
-  const titles = new Set();
-
-  for (
-    let index = 0;
-    index < queries.length;
-    index++
-  ) {
-    const result = searchResults[index];
+      query
+    );
 
     diagnostics.push({
-      stage: "search",
-      query: queries[index],
+      stage:
+        "search_and_metadata",
+
+      query,
+
       ok: result.ok,
-      count: result.ok
-        ? result.value.length
-        : 0,
+
+      attemptCount:
+        result.attemptCount,
+
+      attempts:
+        result.attempts,
 
       ...(!result.ok
         ? { error: result.error }
         : {})
     });
 
-    if (result.ok) {
-      for (const file of result.value) {
-        if (file.title) {
-          titles.add(file.title);
-        }
+    if (!result.ok) {
+      failedQueries++;
+      continue;
+    }
+
+    successfulQueries++;
+
+    const pages =
+      result.data.query?.pages || [];
+
+    totalSearchHits += pages.length;
+
+    for (const page of pages) {
+      if (
+        page.title &&
+        !pagesByTitle.has(page.title)
+      ) {
+        pagesByTitle.set(
+          page.title,
+          page
+        );
       }
     }
-  }
 
-  const selectedTitles = [
-    ...titles
-  ].slice(0, MAX_FILES);
-
-  // Retrieve file metadata in smaller groups.
-
-  const groups = [];
-
-  for (
-    let index = 0;
-    index < selectedTitles.length;
-    index += 15
-  ) {
-    groups.push(
-      selectedTitles.slice(
-        index,
-        index + 15
-      )
-    );
-  }
-
-  const metadataResults = await runBatch(
-    groups,
-    CONCURRENCY,
-
-    async group => {
-      const data = await commonsRequest({
-        action: "query",
-        prop: "imageinfo",
-        titles: group.join("|"),
-        iiprop:
-          "url|mime|size|extmetadata",
-        iiurlwidth: "700"
-      });
-
-      return data.query?.pages || [];
+    if (
+      pagesByTitle.size >=
+      CONFIG.maxCandidates
+    ) {
+      break;
     }
-  );
+  }
 
   const classified = [];
 
   for (
-    let index = 0;
-    index < groups.length;
-    index++
+    const page of
+    pagesByTitle.values()
   ) {
-    const result = metadataResults[index];
+    const candidate =
+      extractCandidate(page);
 
-    diagnostics.push({
-      stage: "metadata",
-      batch: index + 1,
-      ok: result.ok,
-      count: result.ok
-        ? result.value.length
-        : 0,
+    if (!candidate) continue;
 
-      ...(!result.ok
-        ? { error: result.error }
-        : {})
-    });
-
-    if (result.ok) {
-      for (const page of result.value) {
-        const candidate =
-          extractCandidate(page);
-
-        if (candidate) {
-          classified.push(
-            qualifyCandidate(
-              candidate,
-              event,
-              state,
-              year
-            )
-          );
-        }
-      }
-    }
+    classified.push(
+      qualifyCandidate(
+        candidate,
+        event,
+        state,
+        year
+      )
+    );
   }
 
   classified.sort(
@@ -702,29 +898,44 @@ async function discoverMaps(
       a.relevanceScore
   );
 
-  const candidates = classified.filter(
-    item =>
-      item.qualification ===
-      "possible_map"
-  );
+  const candidates =
+    classified.filter(
+      item =>
+        item.qualification ===
+        "possible_map"
+    );
 
-  const rejected = classified.filter(
-    item =>
-      item.qualification !==
-      "possible_map"
-  );
+  const rejected =
+    classified.filter(
+      item =>
+        item.qualification !==
+        "possible_map"
+    );
+
+  const discoveryCompleted =
+    failedQueries === 0 &&
+    successfulQueries > 0;
 
   return {
-    connectivity,
     queries,
+
     diagnostics,
 
-    discoveryCompleted:
-      diagnostics.every(item => item.ok) &&
-      titles.size <= MAX_FILES,
+    discoveryCompleted,
 
-    totalRetrieved: classified.length,
-    titlesFound: titles.size,
+    searchCompleted:
+      discoveryCompleted,
+
+    successfulQueries,
+    failedQueries,
+
+    totalSearchHits,
+
+    totalRetrieved:
+      classified.length,
+
+    titlesFound:
+      pagesByTitle.size,
 
     candidates,
     rejected
@@ -732,7 +943,7 @@ async function discoverMaps(
 }
 
 // ============================================
-// OFFICIAL ARCHIVE RESEARCH LINKS
+// OFFICIAL RESEARCH LINKS
 // ============================================
 
 function officialResearchLinks(
@@ -742,48 +953,45 @@ function officialResearchLinks(
 ) {
   return [
     {
-      name: "NOAA Historical Map Research",
-      type: "official_research_link",
+      name:
+        "NOAA Historical Weather Maps",
 
-      url: buildUrl(
-        "https://www.google.com/search",
-        {
-          q:
-            `site:noaa.gov "${event}" ` +
-            `${year} weather map`
-        }
+      type:
+        "official_research_link",
+
+      url: googleSearchUrl(
+        `site:noaa.gov "${event}" ` +
+        `${year} weather map`
       ),
 
       verifiedCandidate: false
     },
 
     {
-      name: "National Hurricane Center",
-      type: "official_research_link",
+      name:
+        "National Hurricane Center",
 
-      url: buildUrl(
-        "https://www.google.com/search",
-        {
-          q:
-            `site:nhc.noaa.gov "${event}" ` +
-            `${year} track chart`
-        }
+      type:
+        "official_research_link",
+
+      url: googleSearchUrl(
+        `site:nhc.noaa.gov "${event}" ` +
+        `${year} track chart`
       ),
 
       verifiedCandidate: false
     },
 
     {
-      name: "National Weather Service",
-      type: "official_research_link",
+      name:
+        "National Weather Service",
 
-      url: buildUrl(
-        "https://www.google.com/search",
-        {
-          q:
-            `site:weather.gov "${event}" ` +
-            `${state} ${year} radar`
-        }
+      type:
+        "official_research_link",
+
+      url: googleSearchUrl(
+        `site:weather.gov "${event}" ` +
+        `${state} ${year} radar`
       ),
 
       verifiedCandidate: false
@@ -792,7 +1000,141 @@ function officialResearchLinks(
 }
 
 // ============================================
-// ENGINE 5 AUDIT ENDPOINT
+// BUILD AUDIT RESULT
+// ============================================
+
+async function buildAudit(
+  event,
+  state,
+  year
+) {
+  const query =
+    `${event} ${state} map`;
+
+  const researchURL =
+    bingImagesUrl(query);
+
+  const discovery =
+    await discoverMaps(
+      event,
+      state,
+      year
+    );
+
+  const errors =
+    discovery.diagnostics.filter(
+      item => !item.ok
+    );
+
+  return {
+    status: "not_evaluated",
+
+    engine: 5,
+    version: VERSION,
+
+    category:
+      "Historical Weather Maps",
+
+    source:
+      "Wikimedia Commons + Bing Images + NOAA/NHC research links",
+
+    apiKeyRequired: false,
+    automatedSearch: true,
+
+    metadataQualification: true,
+    visualVerification: false,
+    finalGradingEnabled: false,
+
+    event,
+    state,
+    year: year || null,
+
+    query,
+
+    researchURL,
+    researchUrl: researchURL,
+
+    commonsQueries:
+      discovery.queries,
+
+    discoveryCompleted:
+      discovery.discoveryCompleted,
+
+    searchCompleted:
+      discovery.searchCompleted,
+
+    successfulQueries:
+      discovery.successfulQueries,
+
+    failedQueries:
+      discovery.failedQueries,
+
+    totalSearchHits:
+      discovery.totalSearchHits,
+
+    totalRetrieved:
+      discovery.totalRetrieved,
+
+    titlesFound:
+      discovery.titlesFound,
+
+    candidateCount:
+      discovery.candidates.length,
+
+    rejectedCount:
+      discovery.rejected.length,
+
+    candidates:
+      discovery.candidates,
+
+    rejected:
+      discovery.rejected,
+
+    evidence:
+      discovery.candidates.map(
+        item => ({
+          title: item.title,
+          url: item.sourceUrl,
+          imageUrl: item.imageUrl,
+
+          verification:
+            "not_verified"
+        })
+      ),
+
+    officialResearch:
+      officialResearchLinks(
+        event,
+        state,
+        year
+      ),
+
+    diagnostics:
+      discovery.diagnostics,
+
+    discoveryErrors:
+      errors,
+
+    discoveryError:
+      errors.map(
+        item => item.error
+      ).join("; ") || null,
+
+    score: null,
+    grade: null,
+    finalGrade: false,
+
+    message:
+      discovery.candidates.length > 0
+        ? "Possible historical weather maps found. Authentication required before grading."
+        : discovery.discoveryCompleted
+          ? "No possible maps found in the limited completed Wikimedia search. Other archives may contain maps."
+          : "Wikimedia discovery incomplete. Inspect diagnostics. Do not assign zero or an A-F grade."
+  };
+}
+
+// ============================================
+// AUDIT ENDPOINT
 // ============================================
 
 async function handleAudit(url, res) {
@@ -821,157 +1163,112 @@ async function handleAudit(url, res) {
       engine: 5,
 
       message:
-        "Provide event, state and optional four-digit year."
+        "Event and state are required. Year must contain four digits when provided."
     });
   }
 
-  // Preserve the original Bing query rule:
-  // event + state + map (year excluded).
+  const key = JSON.stringify([
+    event.toLowerCase(),
+    state.toLowerCase(),
+    year
+  ]);
 
-  const query =
-    `${event} ${state} map`;
+  const cached =
+    getCachedAudit(key);
 
-  const researchURL =
-    bingImagesUrl(query);
-
-  let discovery;
-
-  try {
-    discovery = await discoverMaps(
-      event,
-      state,
-      year
-    );
-
-  } catch (error) {
-    discovery = {
-      connectivity: {
-        ok: false,
-        error: String(
-          error.message || error
-        )
-      },
-
-      queries: [],
-
-      diagnostics: [{
-        stage: "unexpected",
-        ok: false,
-        error: String(
-          error.message || error
-        )
-      }],
-
-      discoveryCompleted: false,
-      totalRetrieved: 0,
-      titlesFound: 0,
-
-      candidates: [],
-      rejected: []
-    };
+  if (cached) {
+    return respond(res, 200, {
+      ...cached,
+      cacheHit: true
+    });
   }
 
-  const errors =
-    discovery.diagnostics.filter(
-      item => !item.ok
-    );
+  let auditPromise =
+    activeAudits.get(key);
 
-  return respond(res, 200, {
-    status: "not_evaluated",
+  if (!auditPromise) {
+    if (
+      activeAudits.size >=
+      CONFIG.maximumActiveAudits
+    ) {
+      return respond(res, 503, {
+        status: "busy",
+        engine: 5,
 
-    engine: 5,
-    version: VERSION,
+        message:
+          "Engine 5 is processing other audits. Please try again shortly."
+      });
+    }
 
-    category:
-      "Historical Weather Maps",
-
-    source:
-      "Wikimedia Commons + Bing Images + NOAA/NHC research links",
-
-    apiKeyRequired: false,
-    automatedSearch: true,
-    metadataQualification: true,
-
-    visualVerification: false,
-    finalGradingEnabled: false,
-
-    event,
-    state,
-    year: year || null,
-
-    query,
-
-    researchURL,
-    researchUrl: researchURL,
-
-    commonsQueries:
-      discovery.queries,
-
-    commonsConnectivity:
-      discovery.connectivity,
-
-    discoveryCompleted:
-      discovery.discoveryCompleted,
-
-    searchCompleted: false,
-
-    candidateCount:
-      discovery.candidates.length,
-
-    rejectedCount:
-      discovery.rejected.length,
-
-    totalRetrieved:
-      discovery.totalRetrieved,
-
-    titlesFound:
-      discovery.titlesFound,
-
-    candidates:
-      discovery.candidates,
-
-    rejected:
-      discovery.rejected,
-
-    evidence:
-      discovery.candidates.map(
-        item => ({
-          title: item.title,
-          url: item.sourceUrl,
-          imageUrl: item.imageUrl,
-          verification: "not_verified"
-        })
-      ),
-
-    officialResearch:
-      officialResearchLinks(
+    auditPromise =
+      buildAudit(
         event,
         state,
         year
-      ),
+      );
 
-    diagnostics:
-      discovery.diagnostics,
+    activeAudits.set(
+      key,
+      auditPromise
+    );
+  }
 
-    discoveryErrors:
-      errors,
+  try {
+    const result =
+      await auditPromise;
 
-    discoveryError:
-      errors.map(
-        item => item.error
-      ).join("; ") || null,
+    // Cache completed searches only.
+    // Do not cache incomplete failures
+    // for the full TTL.
 
-    score: null,
-    grade: null,
-    finalGrade: false,
+    if (result.discoveryCompleted) {
+      setCachedAudit(
+        key,
+        result
+      );
+    }
 
-    message:
-      discovery.candidates.length
-        ? "Possible maps found by metadata; visual and historical verification required before grading."
-        : discovery.discoveryCompleted
-          ? "No possible maps found in the completed limited Wikimedia search. This does not prove that no maps exist."
-          : "Discovery incomplete or failed. Inspect diagnostics and discoveryErrors; do not treat missing results as zero."
-  });
+    return respond(res, 200, {
+      ...result,
+      cacheHit: false
+    });
+
+  } catch (error) {
+    return respond(res, 200, {
+      status: "not_evaluated",
+
+      engine: 5,
+      version: VERSION,
+
+      event,
+      state,
+      year: year || null,
+
+      discoveryCompleted: false,
+      searchCompleted: false,
+
+      candidateCount: 0,
+      candidates: [],
+
+      discoveryError:
+        String(error.message || error),
+
+      score: null,
+      grade: null,
+      finalGrade: false,
+
+      message:
+        "Audit failed. Historical map evidence was not evaluated."
+    });
+
+  } finally {
+    if (
+      activeAudits.get(key) ===
+      auditPromise
+    ) {
+      activeAudits.delete(key);
+    }
+  }
 }
 
 // ============================================
@@ -1026,8 +1323,14 @@ const server = http.createServer(
             "Wikimedia Commons + Bing Images + NOAA/NHC research links",
 
           apiKeyRequired: false,
+
           automatedSearch: true,
           metadataQualification: true,
+
+          rateLimitProtection: true,
+          retryAfterSupport: true,
+          sequentialRequests: true,
+          resultCaching: true,
 
           visualVerification: false,
           finalGradingEnabled: false,
@@ -1039,7 +1342,7 @@ const server = http.createServer(
           ],
 
           message:
-            "Controlled Commons retrieval with API diagnostics. Authenticity grading disabled."
+            "Rate-limit protection enabled. Historical map authenticity grading remains disabled."
         });
       }
 
@@ -1066,29 +1369,29 @@ const server = http.createServer(
 
       return respond(res, 404, {
         status: "error",
-        message: "Endpoint not found."
+        message:
+          "Endpoint not found."
       });
 
     } catch (error) {
       console.error(
-        "Engine 5:",
+        "Engine 5 server error:",
         error
       );
 
-      if (!res.headersSent) {
-        return respond(res, 500, {
-          status: "error",
-          engine: 5,
-          message:
-            "Internal server error."
-        });
-      }
+      return respond(res, 500, {
+        status: "error",
+        engine: 5,
+
+        message:
+          "Internal server error."
+      });
     }
   }
 );
 
 // ============================================
-// START ENGINE 5
+// START SERVER
 // ============================================
 
 server.listen(
@@ -1096,7 +1399,7 @@ server.listen(
   HOST,
   () => {
     console.log(
-      `Weather Time Machine Engine 5 v${VERSION} listening on ${PORT}`
+      `Weather Time Machine Engine 5 v${VERSION} listening on port ${PORT}`
     );
   }
 );
