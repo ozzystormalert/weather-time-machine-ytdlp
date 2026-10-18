@@ -1,0 +1,123 @@
+
+# ============================================
+# WEATHER TIME MACHINE
+# ENGINE 6 — TEST 6.2 FREE
+# Historical Photo Gallery Verification
+# ============================================
+#
+# No Brave API
+# No paid search service
+# No API keys
+# No Google scraping
+#
+# Node.js 22
+# Manual Google research URLs
+# Independent public website inspection
+#
+# Grading:
+# 100 / 50 / 0 / Not Evaluated
+#
+# Unverified galleries remain Not Evaluated.
+#
+# ============================================
+
+name: Engine 6 Test 6.2 FREE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  engine6-free-test:
+    name: Engine 6 Free Gallery Audit
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------
+      # STEP 1 — CHECKOUT REPOSITORY
+      # --------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --------------------------------------
+      # STEP 2 — NODE.JS 22
+      # --------------------------------------
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # --------------------------------------
+      # STEP 3 — VERIFY REQUIRED FILES
+      # --------------------------------------
+
+      - name: Verify Engine 6 files
+        run: |
+          echo "Checking Engine 6 Test 6.2 files"
+
+          test -f engine6/engine6-discovery-test62.js
+          test -f engine6/engine6-test62.js
+          test -f engine6/engine6-photo-gallery.js
+          test -f engine6/engine6-gallery-urls.json
+
+          echo "All four Engine 6 files found."
+
+      # --------------------------------------
+      # STEP 4 — RUN 18 LOCAL TESTS
+      # --------------------------------------
+
+      - name: Run Engine 6 Test 6.2 FREE
+        run: |
+          node engine6/engine6-test62.js
+
+      # --------------------------------------
+      # STEP 5 — RUN FREE GALLERY INSPECTION
+      # --------------------------------------
+
+      - name: Inspect historical photo galleries
+        id: gallery
+        continue-on-error: true
+        env:
+          INPUT: engine6/engine6-gallery-urls.json
+          OUTPUT: engine6-test62-results.json
+        run: |
+          node engine6/engine6-discovery-test62.js
+
+      # --------------------------------------
+      # STEP 6 — DISPLAY RESULTS
+      # --------------------------------------
+
+      - name: Display gallery report
+        if: always()
+        run: |
+          echo "================================"
+          echo "ENGINE 6 TEST 6.2 FREE"
+          echo "================================"
+
+          if [ -f engine6-test62-results.json ]; then
+            cat engine6-test62-results.json
+          else
+            echo "No gallery report generated."
+          fi
+
+      # --------------------------------------
+      # STEP 7 — UPLOAD JSON REPORT
+      # --------------------------------------
+
+      - name: Upload Engine 6 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine6-test62-free-results
+          path: engine6-test62-results.json
+          if-no-files-found: warn
+
+# ============================================
+# END — ENGINE 6 TEST 6.2 FREE
+# ============================================
