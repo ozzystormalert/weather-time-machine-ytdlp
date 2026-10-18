@@ -21,9 +21,37 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Run Test 5
+      - name: Locate Test 5 JavaScript
+        shell: bash
         run: |
-          node engine5/engine5-map-authenticity-test5.js
+          echo "Locating Engine 5 Test 5 JavaScript..."
+
+          if [ -f "engine5/engine5-map-authenticity-test5.js" ]; then
+            echo "TEST5_SCRIPT=engine5/engine5-map-authenticity-test5.js" >> "$GITHUB_ENV"
+            echo "Found JavaScript in engine5/"
+
+          elif [ -f "engine5/engine5/engine5-map-authenticity-test5.js" ]; then
+            echo "TEST5_SCRIPT=engine5/engine5/engine5-map-authenticity-test5.js" >> "$GITHUB_ENV"
+            echo "Found JavaScript in engine5/engine5/"
+
+          else
+            echo "ERROR: Test 5 JavaScript file not found."
+            echo "Available Engine 5 files:"
+            find engine5 -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+      - name: Check JavaScript Syntax
+        shell: bash
+        run: |
+          echo "Checking JavaScript syntax..."
+          node --check "$TEST5_SCRIPT"
+
+      - name: Run Test 5
+        shell: bash
+        run: |
+          echo "Running Engine 5 Historical Map Authenticity Test 5..."
+          node "$TEST5_SCRIPT"
 
       - name: Upload Test 5 Evidence Report
         if: always()
@@ -32,3 +60,4 @@ jobs:
           name: engine5-test5-evidence-report
           path: engine5-test5-results.json
           if-no-files-found: warn
+          retention-days: 30
