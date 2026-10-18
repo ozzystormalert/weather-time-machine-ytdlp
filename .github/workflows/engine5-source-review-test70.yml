@@ -1,0 +1,39 @@
+
+name: Engine 5 - Source Verification Test 7.0
+
+on:
+  workflow_dispatch:
+
+jobs:
+  source-verification:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 5 Source Review Test 7.0
+        env:
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+          ENGINE5_URL: https://weather-time-machine-engine5.onrender.com
+        run: node engine5/engine5-source-review-v70.js
+
+      - name: Upload Test 7.0 Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-v70-source-review-results
+          path: |
+            engine5-v70-source-review-results.json
+            engine5-v70-human-review.html
+          if-no-files-found: warn
