@@ -1,0 +1,34 @@
+
+name: Engine 5 - Historical Map Authenticity Test 5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  authenticity-test:
+    name: Engine 5 Test 5
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Test 5
+        run: |
+          node engine5/engine5-map-authenticity-test5.js
+
+      - name: Upload Test 5 Evidence Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-test5-evidence-report
+          path: engine5-test5-results.json
+          if-no-files-found: warn
