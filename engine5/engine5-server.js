@@ -3,35 +3,40 @@
 
 /*
  WEATHER TIME MACHINE — ENGINE 5
- VERSION 6.2
+ VERSION 6.3
 
- HISTORICAL WEATHER MAP QUALIFICATION
+ HISTORICAL WEATHER MAP DISCOVERY REPAIR
 
  Node.js 22
  No external packages
- No API key
+ No API keys
  No Bing scraping
 
  PRESERVES:
- - /health
- - /audit5
- - Bing Images research
+ - Existing /health endpoint
+ - Existing /audit5 endpoint
+ - Bing Images research URL
  - Wikimedia Commons discovery
  - Blogger Step 8A compatibility
- - Engines 1–4 (unchanged)
+ - Engines 1–4 unchanged
 
  NEW:
- - Weather-map candidate qualification
+ - Alternate event-name searches
+ - Broader Wikimedia Commons discovery
+ - NOAA/NHC official-source research links
+ - Map-focused metadata qualification
  - Photograph rejection
- - Event, year and geography metadata checks
- - Ranked candidate results
- - Rejection explanations
- - Verification safeguards
+ - Search completion diagnostics
+ - Candidate evidence and source links
 
  IMPORTANT:
- Metadata classification is NOT visual verification.
- Candidate results are NOT authenticated maps.
- Final A–F grading remains disabled.
+ Official research links are not automatically
+ verified map evidence.
+
+ Metadata matching is not visual authentication.
+
+ No A–F grade may be issued until actual
+ historical map authenticity is verified.
 */
 
 const http = require("node:http");
@@ -41,19 +46,19 @@ const PORT =
 
 const HOST = "0.0.0.0";
 
-const VERSION = "6.2";
+const VERSION = "6.3";
 
 const COMMONS_API =
   "https://commons.wikimedia.org/w/api.php";
 
-const MAX_RESULTS = 20;
+const MAX_RESULTS = 35;
 
-const MAX_CANDIDATES = 40;
+const MAX_CANDIDATES = 100;
 
 const TIMEOUT_MS = 18000;
 
 const USER_AGENT =
-  "WeatherTimeMachine-Engine5/6.2 " +
+  "WeatherTimeMachine-Engine5/6.3 " +
   "(historical weather research)";
 
 // ========================================
@@ -91,7 +96,7 @@ function respond(res, status, payload) {
 }
 
 // ========================================
-// TEXT HELPERS
+// UTILITIES
 // ========================================
 
 function normalize(value) {
@@ -121,47 +126,17 @@ function safeHttpUrl(value) {
 
     const url = new URL(value);
 
-    if (
-      url.protocol !== "https:" &&
-      url.protocol !== "http:"
-    ) {
-      return null;
-    }
-
-    return url.toString();
+    return (
+      url.protocol === "https:" ||
+      url.protocol === "http:"
+    )
+      ? url.toString()
+      : null;
 
   } catch {
 
     return null;
   }
-}
-
-function escapeRegex(value) {
-
-  return String(value).replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&"
-  );
-}
-
-function containsPhrase(text, phrase) {
-
-  if (!phrase) {
-    return false;
-  }
-
-  const pattern = new RegExp(
-    "(^|[^a-z0-9])" +
-    escapeRegex(
-      phrase.toLowerCase()
-    ) +
-    "([^a-z0-9]|$)",
-    "i"
-  );
-
-  return pattern.test(
-    text.toLowerCase()
-  );
 }
 
 function unique(values) {
@@ -171,8 +146,26 @@ function unique(values) {
   )];
 }
 
+function containsPhrase(text, phrase) {
+
+  const haystack =
+    String(text || "")
+      .toLowerCase();
+
+  const needle =
+    String(phrase || "")
+      .toLowerCase()
+      .trim();
+
+  if (!needle) {
+    return false;
+  }
+
+  return haystack.includes(needle);
+}
+
 // ========================================
-// BING RESEARCH URL
+// RESEARCH URL BUILDERS
 // ========================================
 
 function bingImagesUrl(query) {
@@ -186,13 +179,129 @@ function bingImagesUrl(query) {
   return url.toString();
 }
 
+function googleSearchUrl(query) {
+
+  const url = new URL(
+    "https://www.google.com/search"
+  );
+
+  url.searchParams.set("q", query);
+
+  return url.toString();
+}
+
+function commonsSearchUrl(query) {
+
+  const url = new URL(
+    "https://commons.wikimedia.org/w/index.php"
+  );
+
+  url.searchParams.set(
+    "search",
+    query
+  );
+
+  url.searchParams.set(
+    "title",
+    "Special:MediaSearch"
+  );
+
+  url.searchParams.set(
+    "type",
+    "image"
+  );
+
+  return url.toString();
+}
+
 // ========================================
-// WIKIMEDIA COMMONS API
+// EVENT ALIASES
+// ========================================
+
+function eventAliases(event, year) {
+
+  const original =
+    normalize(event);
+
+  const lower =
+    original.toLowerCase();
+
+  const aliases = [
+    original
+  ];
+
+  /*
+   Generic prefix variants.
+
+   Examples:
+   Superstorm Sandy -> Sandy
+   Hurricane Sandy -> Sandy
+  */
+
+  const prefixes = [
+
+    "superstorm ",
+
+    "hurricane ",
+
+    "tropical storm ",
+
+    "tropical cyclone ",
+
+    "winter storm ",
+
+    "the "
+
+  ];
+
+  for (const prefix of prefixes) {
+
+    if (
+      lower.startsWith(prefix)
+    ) {
+
+      aliases.push(
+        original.slice(
+          prefix.length
+        )
+      );
+    }
+  }
+
+  /*
+   Known historical naming variants.
+
+   These expand searches; they do not
+   establish historical identity.
+  */
+
+  if (
+    lower.includes("sandy") &&
+    (!year || year === "2012")
+  ) {
+
+    aliases.push(
+      "Hurricane Sandy",
+      "Superstorm Sandy",
+      "Post-Tropical Cyclone Sandy",
+      "Sandy"
+    );
+  }
+
+  return unique(
+    aliases.map(normalize)
+  );
+}
+
+// ========================================
+// COMMONS API
 // ========================================
 
 async function commonsRequest(params) {
 
-  const url = new URL(COMMONS_API);
+  const url = new URL(
+    COMMONS_API
+  );
 
   url.searchParams.set(
     "format",
@@ -231,13 +340,15 @@ async function commonsRequest(params) {
 
         headers: {
 
-          "User-Agent": USER_AGENT,
+          "User-Agent":
+            USER_AGENT,
 
           "Accept":
             "application/json"
         },
 
-        signal: controller.signal
+        signal:
+          controller.signal
       }
     );
 
@@ -269,45 +380,62 @@ async function commonsRequest(params) {
 }
 
 // ========================================
-// SEARCH QUERY BUILDING
+// BUILD BROADER SEARCHES
 // ========================================
 
-function buildQueries(event, state, year) {
+function buildQueries(
+  event,
+  state,
+  year
+) {
 
-  /*
-   Search multiple map-specific phrases.
+  const aliases =
+    eventAliases(
+      event,
+      year
+    );
 
-   The original Bing research query
-   remains event + state + map.
+  const queries = [];
 
-   These are Commons discovery queries.
-  */
+  for (const alias of aliases) {
 
-  return unique([
+    queries.push(
 
-    [event, state, "weather map"]
-      .join(" "),
+      `${alias} map`,
 
-    [event, year, "storm track map"]
-      .filter(Boolean)
-      .join(" "),
+      `${alias} track`,
 
-    [event, state, year, "radar"]
-      .filter(Boolean)
-      .join(" "),
+      `${alias} weather`,
 
-    [event, year, "meteorological map"]
-      .filter(Boolean)
-      .join(" "),
+      `${alias} radar`
 
-    [event, state, "map"]
-      .join(" ")
+    );
 
-  ]);
+    if (year) {
+
+      queries.push(
+        `${alias} ${year} map`
+      );
+    }
+  }
+
+  queries.push(
+
+    `${event} ${state}`,
+
+    `${event} storm track`,
+
+    `${event} meteorological chart`
+
+  );
+
+  return unique(
+    queries
+  ).slice(0, 16);
 }
 
 // ========================================
-// COMMONS FILE SEARCH
+// SEARCH COMMONS
 // ========================================
 
 async function searchCommons(query) {
@@ -331,7 +459,7 @@ async function searchCommons(query) {
 }
 
 // ========================================
-// FILE METADATA LOOKUP
+// GET FILE DETAILS
 // ========================================
 
 async function getFileDetails(titles) {
@@ -360,7 +488,7 @@ async function getFileDetails(titles) {
 }
 
 // ========================================
-// CANDIDATE EXTRACTION
+// EXTRACT FILE CANDIDATE
 // ========================================
 
 function extractCandidate(page) {
@@ -376,311 +504,171 @@ function extractCandidate(page) {
     String(info.mime || "")
       .toLowerCase();
 
-  if (!mime.startsWith("image/")) {
+  if (
+    !mime.startsWith("image/")
+  ) {
     return null;
   }
 
   const metadata =
     info.extmetadata || {};
 
-  const description = stripHtml(
-    metadata.ImageDescription?.value
-  );
+  const imageUrl =
+    safeHttpUrl(
+      info.url
+    );
 
-  const credit = stripHtml(
-    metadata.Credit?.value
-  );
+  const sourceUrl =
+    safeHttpUrl(
+      info.descriptionurl
+    );
 
-  const artist = stripHtml(
-    metadata.Artist?.value
-  );
-
-  const date = stripHtml(
-    metadata.DateTimeOriginal?.value
-  );
-
-  const license = stripHtml(
-    metadata.LicenseShortName?.value
-  );
-
-  const imageUrl = safeHttpUrl(
-    info.url
-  );
-
-  const thumbnailUrl = safeHttpUrl(
-    info.thumburl || info.url
-  );
-
-  const sourceUrl = safeHttpUrl(
-    info.descriptionurl
-  );
-
-  if (!imageUrl || !sourceUrl) {
+  if (
+    !imageUrl ||
+    !sourceUrl
+  ) {
     return null;
   }
 
   return {
 
-    title: page.title,
+    title:
+      page.title,
 
-    url: sourceUrl,
+    url:
+      sourceUrl,
 
     sourceUrl,
 
     imageUrl,
 
-    thumbnailUrl,
+    thumbnailUrl:
+      safeHttpUrl(
+        info.thumburl ||
+        info.url
+      ),
 
     provider:
       "Wikimedia Commons",
 
     mime,
 
-    width: info.width || null,
+    width:
+      info.width || null,
 
-    height: info.height || null,
+    height:
+      info.height || null,
 
-    description,
+    description:
+      stripHtml(
+        metadata.ImageDescription?.value
+      ),
 
-    credit,
+    credit:
+      stripHtml(
+        metadata.Credit?.value
+      ),
 
-    artist,
+    artist:
+      stripHtml(
+        metadata.Artist?.value
+      ),
 
-    date,
+    date:
+      stripHtml(
+        metadata.DateTimeOriginal?.value
+      ),
 
-    license,
-
-    metadataAvailable:
-      Boolean(
-        description ||
-        credit ||
-        artist ||
-        date
+    license:
+      stripHtml(
+        metadata.LicenseShortName?.value
       )
   };
 }
 
 // ========================================
-// MAP AND PHOTO KEYWORDS
+// WEATHER MAP KEYWORDS
 // ========================================
 
 const MAP_TERMS = [
 
   "weather map",
-
-  "historical weather map",
-
   "meteorological map",
-
   "synoptic chart",
-
   "surface analysis",
-
-  "surface weather",
-
   "weather chart",
-
   "storm track",
-
   "track map",
-
   "track chart",
-
   "hurricane track",
-
   "cyclone track",
-
   "forecast cone",
-
   "radar map",
-
   "radar image",
-
   "radar reflectivity",
-
   "doppler radar",
-
-  "satellite imagery",
-
-  "satellite image",
-
   "precipitation map",
-
   "rainfall map",
-
   "wind field",
-
   "wind speed map",
-
   "pressure map",
-
   "isobar",
-
   "temperature map",
-
-  "flood inundation map",
-
   "storm surge map",
-
+  "inundation map",
   "weather analysis",
-
-  "weather radar"
+  "weather radar",
+  "tropical cyclone track",
+  "best track",
+  "storm path",
+  "storm trajectory"
 
 ];
 
 const PHOTO_TERMS = [
 
   "storm damage",
-
-  "damage photo",
-
-  "damage photograph",
-
   "aerial photo",
-
   "aerial photograph",
-
-  "street photo",
-
-  "street photograph",
-
+  "damage photograph",
+  "damage photo",
   "flood damage",
-
   "damaged house",
-
   "damaged homes",
-
   "destroyed home",
-
   "destroyed homes",
-
   "flooded street",
-
   "flooded road",
-
   "downed trees",
-
   "fallen trees",
-
   "debris",
-
-  "aftermath photo",
-
-  "aftermath photograph",
-
-  "people evacuating",
-
   "rescue workers",
-
-  "news photograph",
-
-  "photograph of",
-
-  "photo of"
+  "relief supplies",
+  "tracking trucks",
+  "photo of",
+  "photograph of"
 
 ];
 
 const MAP_TITLE_TERMS = [
 
   "map",
-
   "chart",
-
   "radar",
-
   "track",
-
   "isobar",
-
   "analysis",
-
   "meteorological",
-
   "weather",
-
   "forecast",
-
   "precipitation",
-
-  "inundation",
-
-  "surge"
+  "surge",
+  "cyclone"
 
 ];
 
 // ========================================
-// EVENT MATCHING
-// ========================================
-
-function eventMatch(text, event) {
-
-  const full =
-    event.toLowerCase();
-
-  if (containsPhrase(text, full)) {
-    return true;
-  }
-
-  const ignored = new Set([
-
-    "the",
-    "great",
-    "storm",
-    "hurricane",
-    "tropical",
-    "superstorm",
-    "cyclone",
-    "flood",
-    "blizzard",
-    "tornado",
-    "outbreak",
-    "of",
-    "and"
-  ]);
-
-  const words = event
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(word =>
-      word.length >= 4 &&
-      !ignored.has(word)
-    );
-
-  return words.some(word =>
-    containsPhrase(text, word)
-  );
-}
-
-// ========================================
-// GEOGRAPHIC MATCHING
-// ========================================
-
-function geographyMatch(text, state) {
-
-  return containsPhrase(
-    text,
-    state
-  );
-}
-
-// ========================================
-// YEAR MATCHING
-// ========================================
-
-function yearMatch(text, year) {
-
-  if (!year) {
-    return false;
-  }
-
-  return containsPhrase(
-    text,
-    year
-  );
-}
-
-// ========================================
-// CLASSIFY IMAGE CANDIDATE
+// CANDIDATE QUALIFICATION
 // ========================================
 
 function qualifyCandidate(
@@ -693,9 +681,9 @@ function qualifyCandidate(
   const title = candidate.title
     .replace(/^File:/i, "")
     .replace(/\.[^.]+$/, "")
-    .replace(/[_-]/g, " ");
+    .replace(/_/g, " ");
 
-  const metadataText = [
+  const text = [
 
     title,
 
@@ -703,145 +691,149 @@ function qualifyCandidate(
 
     candidate.date
 
-  ].join(" ").toLowerCase();
+  ]
+    .join(" ")
+    .toLowerCase();
 
   const titleText =
     title.toLowerCase();
 
   const mapHits =
-    MAP_TERMS.filter(term =>
-      containsPhrase(
-        metadataText,
-        term
-      )
+    MAP_TERMS.filter(
+      term =>
+        containsPhrase(
+          text,
+          term
+        )
     );
 
   const photoHits =
-    PHOTO_TERMS.filter(term =>
-      containsPhrase(
-        metadataText,
-        term
-      )
+    PHOTO_TERMS.filter(
+      term =>
+        containsPhrase(
+          text,
+          term
+        )
     );
 
-  const mapTitleHits =
-    MAP_TITLE_TERMS.filter(term =>
-      containsPhrase(
-        titleText,
-        term
-      )
+  const titleHits =
+    MAP_TITLE_TERMS.filter(
+      term =>
+        containsPhrase(
+          titleText,
+          term
+        )
+    );
+
+  const aliases =
+    eventAliases(
+      event,
+      year
     );
 
   const eventMatched =
-    eventMatch(
-      metadataText,
-      event
+    aliases.some(
+      alias =>
+        containsPhrase(
+          text,
+          alias
+        )
     );
 
-  const geographyMatched =
-    geographyMatch(
-      metadataText,
+  const stateMatched =
+    containsPhrase(
+      text,
       state
     );
 
   const yearMatched =
-    yearMatch(
-      metadataText,
-      year
-    );
+    year
+      ? containsPhrase(
+          text,
+          year
+        )
+      : false;
 
   const reasons = [];
+
+  let relevanceScore = 0;
+
+  relevanceScore +=
+    mapHits.length * 12;
+
+  relevanceScore +=
+    titleHits.length * 8;
+
+  if (eventMatched) {
+    relevanceScore += 20;
+  }
+
+  if (stateMatched) {
+    relevanceScore += 10;
+  }
+
+  if (yearMatched) {
+    relevanceScore += 10;
+  }
+
+  relevanceScore -=
+    photoHits.length * 25;
 
   let qualification =
     "possible_map";
 
-  let score = 0;
-
-  score +=
-    mapHits.length * 12;
-
-  score +=
-    mapTitleHits.length * 8;
-
-  if (eventMatched) {
-    score += 15;
-  }
-
-  if (geographyMatched) {
-    score += 10;
-  }
-
-  if (yearMatched) {
-    score += 10;
-  }
-
-  score -=
-    photoHits.length * 20;
-
-  /*
-   Strong photo indicators override
-   weak map keyword matches.
-
-   A storm-damage photo should not
-   qualify merely because its
-   description mentions a map.
-  */
-
   if (
     photoHits.length > 0 &&
-    mapTitleHits.length === 0
+    mapHits.length === 0
   ) {
 
     qualification =
       "rejected_photo";
 
     reasons.push(
-      "Metadata describes a photograph or storm-damage scene."
+      "Photograph or non-map imagery indicated by metadata."
     );
 
   } else if (
     mapHits.length === 0 &&
-    mapTitleHits.length === 0
+    titleHits.length === 0
   ) {
 
     qualification =
       "rejected_non_map";
 
     reasons.push(
-      "No weather-map indicators found in title or metadata."
+      "No weather-map indicators identified."
     );
 
-  } else if (
-    mapHits.length > 0 ||
-    mapTitleHits.length > 0
-  ) {
-
-    qualification =
-      "possible_map";
+  } else {
 
     reasons.push(
-      "Map-related terms found; visual verification required."
+      "Possible weather-map candidate; authentication required."
     );
   }
 
   if (!eventMatched) {
 
     reasons.push(
-      "Selected event not confirmed by metadata."
+      "Event not confirmed."
     );
   }
 
-  if (!geographyMatched) {
+  if (!stateMatched) {
 
     reasons.push(
-      "Selected state not confirmed by metadata."
+      "State not confirmed."
     );
   }
 
-  if (!yearMatched) {
+  if (
+    year &&
+    !yearMatched
+  ) {
 
     reasons.push(
-      "Selected year not confirmed by metadata."
+      "Year not confirmed."
     );
   }
 
@@ -856,7 +848,7 @@ function qualifyCandidate(
         0,
         Math.min(
           100,
-          score
+          relevanceScore
         )
       ),
 
@@ -870,7 +862,7 @@ function qualifyCandidate(
       eventMatched,
 
     geographyMetadataMatch:
-      geographyMatched,
+      stateMatched,
 
     yearMetadataMatch:
       yearMatched,
@@ -895,7 +887,7 @@ function qualifyCandidate(
 }
 
 // ========================================
-// DISCOVER AND CLASSIFY
+// DISCOVERY ENGINE
 // ========================================
 
 async function discoverMaps(
@@ -911,7 +903,7 @@ async function discoverMaps(
       year
     );
 
-  const titleSet =
+  const titles =
     new Set();
 
   const errors = [];
@@ -922,17 +914,19 @@ async function discoverMaps(
 
     try {
 
-      const matches =
-        await searchCommons(query);
+      const results =
+        await searchCommons(
+          query
+        );
 
       successfulQueries++;
 
-      for (const item of matches) {
+      for (const result of results) {
 
-        if (item.title) {
+        if (result.title) {
 
-          titleSet.add(
-            item.title
+          titles.add(
+            result.title
           );
         }
       }
@@ -940,50 +934,45 @@ async function discoverMaps(
     } catch (error) {
 
       errors.push({
+
         query,
+
         message:
           error.message
       });
     }
   }
 
-  const titles = [
-    ...titleSet
-  ].slice(
-    0,
-    MAX_CANDIDATES
-  );
+  const selectedTitles =
+    [...titles].slice(
+      0,
+      MAX_CANDIDATES
+    );
 
   const rawCandidates = [];
 
-  /*
-   MediaWiki accepts multiple titles.
-   Batch requests prevent oversized URLs.
-  */
-
   for (
     let i = 0;
-    i < titles.length;
+    i < selectedTitles.length;
     i += 15
   ) {
 
     try {
 
-      const batch =
-        titles.slice(
-          i,
-          i + 15
-        );
-
       const pages =
         await getFileDetails(
-          batch
+          selectedTitles.slice(
+            i,
+            i + 15
+          )
         );
 
       for (const page of pages) {
 
         const candidate =
-          extractCandidate(page);
+          extractCandidate(
+            page
+          );
 
         if (candidate) {
 
@@ -1006,7 +995,7 @@ async function discoverMaps(
     }
   }
 
-  const qualified =
+  const classified =
     rawCandidates.map(
       candidate =>
         qualifyCandidate(
@@ -1017,23 +1006,23 @@ async function discoverMaps(
         )
     );
 
-  qualified.sort(
+  classified.sort(
     (a, b) =>
       b.relevanceScore -
       a.relevanceScore
   );
 
-  const possibleMaps =
-    qualified.filter(
-      candidate =>
-        candidate.qualification ===
+  const candidates =
+    classified.filter(
+      item =>
+        item.qualification ===
         "possible_map"
     );
 
   const rejected =
-    qualified.filter(
-      candidate =>
-        candidate.qualification !==
+    classified.filter(
+      item =>
+        item.qualification !==
         "possible_map"
     );
 
@@ -1048,53 +1037,131 @@ async function discoverMaps(
         queries.length &&
       errors.length === 0,
 
-    candidates:
-      possibleMaps,
+    totalRetrieved:
+      classified.length,
+
+    candidates,
 
     rejected,
 
-    errors,
-
-    totalRetrieved:
-      qualified.length
+    errors
   };
 }
 
 // ========================================
-// BUILD EVIDENCE LIST
+// OFFICIAL SOURCE RESEARCH LINKS
+// ========================================
+
+function officialSources(
+  event,
+  state,
+  year
+) {
+
+  const aliases =
+    eventAliases(
+      event,
+      year
+    );
+
+  const primary =
+    aliases.find(
+      alias =>
+        alias.toLowerCase()
+          .startsWith("hurricane ")
+    ) || aliases[0];
+
+  return [
+
+    {
+
+      name:
+        "NOAA Historical Weather Maps",
+
+      type:
+        "official_research_link",
+
+      url:
+        googleSearchUrl(
+          `site:noaa.gov "${primary}" ${year} weather map`
+        ),
+
+      verifiedCandidate:
+        false
+    },
+
+    {
+
+      name:
+        "National Hurricane Center",
+
+      type:
+        "official_research_link",
+
+      url:
+        googleSearchUrl(
+          `site:nhc.noaa.gov "${primary}" ${year} track map`
+        ),
+
+      verifiedCandidate:
+        false
+    },
+
+    {
+
+      name:
+        "NOAA Weather Archives",
+
+      type:
+        "official_research_link",
+
+      url:
+        googleSearchUrl(
+          `site:weather.gov "${primary}" ${state} ${year} radar map`
+        ),
+
+      verifiedCandidate:
+        false
+    }
+
+  ];
+}
+
+// ========================================
+// EVIDENCE LIST
 // ========================================
 
 function buildEvidence(candidates) {
 
   return candidates.map(
-    candidate => ({
+    item => ({
 
       title:
-        candidate.title,
+        item.title,
 
       url:
-        candidate.sourceUrl,
+        item.sourceUrl,
 
       provider:
-        candidate.provider,
+        item.provider,
 
       imageUrl:
-        candidate.imageUrl,
+        item.imageUrl,
 
       thumbnailUrl:
-        candidate.thumbnailUrl,
+        item.thumbnailUrl,
 
       description:
-        candidate.description,
+        item.description,
 
       date:
-        candidate.date,
+        item.date,
 
       qualification:
-        candidate.qualification,
+        item.qualification,
 
       relevanceScore:
-        candidate.relevanceScore,
+        item.relevanceScore,
 
       verification:
         "not_verified"
@@ -1103,7 +1170,7 @@ function buildEvidence(candidates) {
 }
 
 // ========================================
-// MAIN AUDIT ENDPOINT
+// AUDIT ENDPOINT
 // ========================================
 
 async function handleAudit(
@@ -1123,7 +1190,10 @@ async function handleAudit(
     url.searchParams.get("year")
   );
 
-  if (!event || !state) {
+  if (
+    !event ||
+    !state
+  ) {
 
     return respond(
       res,
@@ -1135,7 +1205,7 @@ async function handleAudit(
         engine: 5,
 
         message:
-          "Event and state are required."
+          "Event and state required."
       }
     );
   }
@@ -1182,7 +1252,7 @@ async function handleAudit(
   }
 
   /*
-   Original Bing research rule:
+   Preserve original Bing rule:
    event + state + map
    Year excluded.
   */
@@ -1191,7 +1261,9 @@ async function handleAudit(
     `${event} ${state} map`;
 
   const researchURL =
-    bingImagesUrl(query);
+    bingImagesUrl(
+      query
+    );
 
   let discovery;
 
@@ -1214,16 +1286,17 @@ async function handleAudit(
 
       discoveryCompleted: false,
 
+      totalRetrieved: 0,
+
       candidates: [],
 
       rejected: [],
 
       errors: [{
+
         message:
           error.message
-      }],
-
-      totalRetrieved: 0
+      }]
     };
   }
 
@@ -1232,10 +1305,20 @@ async function handleAudit(
       discovery.candidates
     );
 
+  const officialResearch =
+    officialSources(
+      event,
+      state,
+      year
+    );
+
   const discoveryError =
     discovery.errors.length
       ? discovery.errors
-          .map(e => e.message)
+          .map(
+            item =>
+              item.message
+          )
           .join("; ")
       : null;
 
@@ -1249,13 +1332,14 @@ async function handleAudit(
 
       engine: 5,
 
-      version: VERSION,
+      version:
+        VERSION,
 
       category:
         "Historical Weather Maps",
 
       source:
-        "Wikimedia Commons + Bing Images",
+        "Wikimedia Commons + Bing Images + NOAA/NHC research",
 
       apiKeyRequired: false,
 
@@ -1269,7 +1353,8 @@ async function handleAudit(
 
       state,
 
-      year: year || null,
+      year:
+        year || null,
 
       query,
 
@@ -1303,6 +1388,8 @@ async function handleAudit(
 
       evidence,
 
+      officialResearch,
+
       score: null,
 
       grade: null,
@@ -1317,17 +1404,11 @@ async function handleAudit(
         possibleMapsFound:
           discovery.candidates.length,
 
-        photographsOrNonMapsRejected:
+        rejectedNonMaps:
           discovery.rejected.length,
 
         visualAuthenticityVerified:
           false,
-
-        eventVerified: false,
-
-        yearVerified: false,
-
-        geographyVerified: false,
 
         completedHistoricalAudit:
           false
@@ -1337,14 +1418,14 @@ async function handleAudit(
 
       message:
         discovery.candidates.length
-          ? "Possible historical weather maps found. Metadata qualification completed; visual and historical authentication remain required."
-          : "No qualifying map candidates found in this search. This does not establish that historical maps are absent. Grade remains Not Evaluated."
+          ? "Possible historical weather maps discovered. Visual and historical authentication required before grading."
+          : "No qualified maps found in the current automated discovery. Official archive research links are provided. Grade remains Not Evaluated."
     }
   );
 }
 
 // ========================================
-// HEALTH ENDPOINT
+// HEALTH
 // ========================================
 
 function healthResponse(res) {
@@ -1354,33 +1435,44 @@ function healthResponse(res) {
     200,
     {
 
-      status: "ok",
+      status:
+        "ok",
 
       engine: 5,
 
-      version: VERSION,
+      version:
+        VERSION,
 
       source:
-        "Wikimedia Commons + Bing Images",
+        "Wikimedia Commons + Bing Images + NOAA/NHC research",
 
-      apiKeyRequired: false,
+      apiKeyRequired:
+        false,
 
-      automatedSearch: true,
+      automatedSearch:
+        true,
 
-      metadataQualification: true,
+      metadataQualification:
+        true,
 
-      visualVerification: false,
+      visualVerification:
+        false,
 
-      finalGradingEnabled: false,
+      finalGradingEnabled:
+        false,
 
       endpoints: [
+
         "/",
+
         "/health",
+
         "/audit5"
+
       ],
 
       message:
-        "Historical weather map metadata qualification enabled. Final grades require authenticated maps."
+        "Expanded historical weather map discovery enabled. Authenticity grading remains disabled."
     }
   );
 }
@@ -1394,7 +1486,8 @@ const server =
     async (req, res) => {
 
       if (
-        req.method === "OPTIONS"
+        req.method ===
+        "OPTIONS"
       ) {
 
         res.writeHead(
@@ -1416,7 +1509,8 @@ const server =
       }
 
       if (
-        req.method !== "GET"
+        req.method !==
+        "GET"
       ) {
 
         return respond(
@@ -1424,7 +1518,8 @@ const server =
           405,
           {
 
-            status: "error",
+            status:
+              "error",
 
             message:
               "GET only."
@@ -1448,7 +1543,8 @@ const server =
           400,
           {
 
-            status: "error",
+            status:
+              "error",
 
             message:
               "Invalid URL."
@@ -1480,7 +1576,8 @@ const server =
         }
 
         if (
-          url.pathname === "/"
+          url.pathname ===
+          "/"
         ) {
 
           return respond(
@@ -1491,10 +1588,11 @@ const server =
               name:
                 "Weather Time Machine — Engine 5",
 
-              version: VERSION,
+              version:
+                VERSION,
 
               source:
-                "Wikimedia Commons + Bing Images",
+                "Wikimedia Commons + Bing Images + NOAA/NHC research",
 
               health:
                 "/health",
@@ -1503,7 +1601,7 @@ const server =
                 "/audit5?event=Superstorm%20Sandy&state=New%20Jersey&year=2012",
 
               message:
-                "Historical weather map qualification service. Final authenticity verification required."
+                "Expanded historical weather map discovery service. Final grading requires verified evidence."
             }
           );
         }
@@ -1513,7 +1611,8 @@ const server =
           404,
           {
 
-            status: "error",
+            status:
+              "error",
 
             message:
               "Endpoint not found."
@@ -1536,7 +1635,8 @@ const server =
             500,
             {
 
-              status: "error",
+              status:
+                "error",
 
               engine: 5,
 
@@ -1550,7 +1650,7 @@ const server =
   );
 
 // ========================================
-// START ENGINE 5
+// START ENGINE
 // ========================================
 
 server.listen(
