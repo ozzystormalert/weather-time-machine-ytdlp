@@ -1,0 +1,56 @@
+
+name: Engine 5 - Final Grading Test 7.2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  final-grading-test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Generate Test 7.0 source report
+        env:
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+          ENGINE5_URL: https://weather-time-machine-engine5.onrender.com
+        run: node engine5/engine5-source-review-v70.js
+
+      - name: Run Test 7.1 validation
+        env:
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+          SOURCE_REPORT: engine5-v70-source-review-results.json
+        run: node engine5/engine5-auth-validation-v71.js
+
+      - name: Run Test 7.2 final grading safeguards
+        env:
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+          VALIDATION_REPORT: engine5-v71-auth-validation-results.json
+        run: node engine5/engine5-final-grading-v72.js
+
+      - name: Upload Test 7.2 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-v72-final-grading-results
+          path: |
+            engine5-v70-source-review-results.json
+            engine5-v71-auth-validation-results.json
+            engine5-v72-final-grading-results.json
+          if-no-files-found: warn
