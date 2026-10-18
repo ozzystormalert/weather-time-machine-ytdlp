@@ -1,163 +1,299 @@
 
 'use strict';
 
-// Weather Time Machine — Engine 6 v6.1
-// Historical Weather Photo Gallery Audit
-// Node.js 22 — No external packages
+// ============================================
+// WEATHER TIME MACHINE
+// ENGINE 6 — TEST 6.2 FREE
+// FILE 3 — PHOTO GALLERY RESEARCH
+// ============================================
+//
+// Historical Weather Photo Gallery Search
+//
+// Node.js 22
+// No external packages
+// No Brave API
+// No paid search API
+// No API keys
+// No Google scraping
+//
+// PURPOSE:
+//
+// 1. Build a regular Google search query.
+// 2. Generate a Google research link.
+// 3. Preserve the Weather Time Machine
+//    historical event and state selection.
+// 4. Support the free Engine 6 verification
+//    process.
+//
+// IMPORTANT:
+//
+// Google search results are research leads.
+// They are NOT verified photo galleries.
+//
+// A search result alone cannot receive
+// a numerical grade.
+//
+// Final grading remains:
+// 100 / 50 / 0 / Not Evaluated
+//
+// ============================================
 
-const fs = require('node:fs');
-const { URL } = require('node:url');
 
-const GRADES = Object.freeze({
-  VERIFIED: 100,
-  LIMITED: 50,
-  NONE: 0
-});
+// --------------------------------------------
+// CLEAN INPUT
+// --------------------------------------------
 
-function text(value) {
-  return typeof value === 'string'
-    ? value.trim()
-    : '';
+function cleanInput(value) {
+  return String(value ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
+
+
+// --------------------------------------------
+// VALIDATE EVENT AND STATE
+// --------------------------------------------
+
+function validSelection(event, state) {
+  const cleanEvent = cleanInput(event);
+  const cleanState = cleanInput(state);
+
+  return (
+    cleanEvent.length > 0 &&
+    cleanState.length > 0
+  );
+}
+
+
+// --------------------------------------------
+// BUILD GOOGLE SEARCH FORMULA
+// --------------------------------------------
 
 function queryFor(event, state) {
-  if (!text(event) || !text(state)) {
-    throw new Error('Event and state are required');
+  const cleanEvent = cleanInput(event);
+  const cleanState = cleanInput(state);
+
+  if (!validSelection(cleanEvent, cleanState)) {
+    return '';
   }
 
-  return `photo gallery ${text(event)} ${text(state)}`;
+  return [
+    'photo gallery',
+    cleanEvent,
+    cleanState
+  ].join(' ');
 }
+
+
+// --------------------------------------------
+// GENERATE REGULAR GOOGLE SEARCH URL
+// --------------------------------------------
 
 function googleLink(event, state) {
-  return 'https://www.google.com/search?q=' +
-    encodeURIComponent(queryFor(event, state));
+  const query = queryFor(event, state);
+
+  if (!query) {
+    return '';
+  }
+
+  const url = new URL(
+    'https://www.google.com/search'
+  );
+
+  url.searchParams.set(
+    'q',
+    query
+  );
+
+  return url.toString();
 }
 
-function validHttpUrl(value) {
-  try {
-    const url = new URL(value);
 
-    return (
-      (url.protocol === 'https:' ||
-       url.protocol === 'http:') &&
-      Boolean(url.hostname)
-    );
-  } catch {
-    return false;
-  }
-}
+// --------------------------------------------
+// BUILD RESEARCH INFORMATION
+// --------------------------------------------
 
-function grade(evidence) {
-  if (!evidence || evidence.searchCompleted !== true) {
-    return {
-      status: 'Not Evaluated',
-      score: null,
-      grade: null,
-      reason: 'Search not completed'
-    };
-  }
+function researchFor(event, state, year = '') {
+  const cleanEvent = cleanInput(event);
+  const cleanState = cleanInput(state);
+  const cleanYear = cleanInput(year);
 
-  if (
-    evidence.galleryVerified === true &&
-    evidence.eventVerified === true &&
-    evidence.stateVerified === true &&
-    evidence.photosVerified === true &&
-    validHttpUrl(evidence.evidenceUrl)
-  ) {
-    if (evidence.collectionSize === 'limited') {
-      return {
-        status: 'Verified limited photo collection',
-        score: GRADES.LIMITED,
-        grade: '50/100',
-        reason: 'Relevant limited photo collection verified'
-      };
-    }
-
-    if (evidence.collectionSize === 'gallery') {
-      return {
-        status: 'Verified relevant photo gallery',
-        score: GRADES.VERIFIED,
-        grade: 'A+',
-        reason: 'Relevant photo gallery verified'
-      };
-    }
-  }
-
-  if (
-    evidence.confirmedNoGallery === true &&
-    evidence.galleryVerified !== true &&
-    evidence.searchCompleted === true &&
-    evidence.searchCoverageDocumented === true &&
-    Array.isArray(evidence.checkedUrls) &&
-    evidence.checkedUrls.length > 0 &&
-    evidence.checkedUrls.every(validHttpUrl)
-  ) {
-    return {
-      status: 'Confirmed no relevant gallery',
-      score: GRADES.NONE,
-      grade: '0/100',
-      reason: 'Completed documented search confirmed no relevant gallery'
-    };
-  }
-
-  return {
-    status: 'Not Evaluated',
-    score: null,
-    grade: null,
-    reason: 'Evidence insufficient or not independently verified'
-  };
-}
-
-function audit(input) {
-  const event = text(input?.event);
-  const state = text(input?.state);
-  const year = text(String(input?.year ?? ''));
-
-  const searchTerm = queryFor(event, state);
-  const evaluation = grade(input?.evidence);
+  const query = queryFor(
+    cleanEvent,
+    cleanState
+  );
 
   return {
     engine: 6,
-    version: '6.1',
-    event,
-    state,
-    year,
-    searchTerm,
-    googleSearchUrl: googleLink(event, state),
-    ...evaluation,
-    evidenceUrl: validHttpUrl(input?.evidence?.evidenceUrl)
-      ? input.evidence.evidenceUrl
-      : null,
-    automatedDiscovery: false,
-    note: 'Google Web Search is a research link, not verification evidence. Gallery evidence must be independently verified.'
+
+    version: '6.2-free',
+
+    category:
+      'Historical Photo Gallery',
+
+    event: cleanEvent,
+
+    state: cleanState,
+
+    year: cleanYear,
+
+    searchTerm: query,
+
+    googleSearchUrl:
+      googleLink(cleanEvent, cleanState),
+
+    provider:
+      'Google Web Search — Manual Research',
+
+    discoveryMethod:
+      'User-selected public gallery URLs',
+
+    apiRequired: false,
+
+    paidServiceRequired: false,
+
+    googleScraping: false,
+
+    score: null,
+
+    grade: null,
+
+    status:
+      'Not Evaluated',
+
+    instructions:
+      'Open Google search, locate relevant historical photo gallery websites, and supply their public URLs to Engine 6 Test 6.2 for independent inspection.',
+
+    note:
+      'Google search results are research leads only. Event photographs must be verified before numerical grading.'
   };
 }
 
-// Allow direct execution to generate a JSON report.
-if (require.main === module) {
-  try {
-    const inputPath = process.argv[2];
 
-    const input = inputPath
-      ? JSON.parse(fs.readFileSync(inputPath, 'utf8'))
-      : {
-          event: process.env.EVENT || 'Tropical Storm Irene',
-          state: process.env.STATE || 'Vermont',
-          year: process.env.YEAR || '2011'
-        };
+// --------------------------------------------
+// PRINT RESEARCH INFORMATION
+// --------------------------------------------
 
-    console.log(JSON.stringify(audit(input), null, 2));
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
+function printResearch(event, state, year = '') {
+  const result = researchFor(
+    event,
+    state,
+    year
+  );
+
+  console.log('');
+  console.log('====================================');
+  console.log(' WEATHER TIME MACHINE');
+  console.log(' ENGINE 6 — PHOTO GALLERY RESEARCH');
+  console.log('====================================');
+  console.log('');
+
+  console.log(
+    'Weather Event:',
+    result.event
+  );
+
+  console.log(
+    'State:',
+    result.state
+  );
+
+  console.log(
+    'Year:',
+    result.year || 'Not specified'
+  );
+
+  console.log('');
+
+  console.log(
+    'Google Search:',
+    result.searchTerm
+  );
+
+  console.log('');
+
+  console.log(
+    'Research URL:',
+    result.googleSearchUrl
+  );
+
+  console.log('');
+
+  console.log(
+    'Status:',
+    result.status
+  );
+
+  console.log('');
+
+  console.log(
+    'API Required:',
+    'NO'
+  );
+
+  console.log(
+    'Paid Service:',
+    'NO'
+  );
+
+  console.log('');
+
+  console.log(
+    'NEXT STEP:'
+  );
+
+  console.log(
+    'Find historical photo gallery URLs using the Google research link.'
+  );
+
+  console.log(
+    'Place selected URLs into engine6-gallery-urls.json.'
+  );
+
+  console.log('');
 }
 
-// Required exports for engine6-test61.js
+
+// --------------------------------------------
+// DIRECT NODE.JS EXECUTION
+// --------------------------------------------
+
+if (require.main === module) {
+  const event =
+    process.env.EVENT ||
+    'Tropical Storm Irene';
+
+  const state =
+    process.env.STATE ||
+    'Vermont';
+
+  const year =
+    process.env.YEAR ||
+    '2011';
+
+  printResearch(
+    event,
+    state,
+    year
+  );
+}
+
+
+// --------------------------------------------
+// EXPORT FUNCTIONS
+// --------------------------------------------
+
 module.exports = {
+  cleanInput,
+  validSelection,
   queryFor,
   googleLink,
-  validHttpUrl,
-  grade,
-  audit
+  researchFor,
+  printResearch
 };
+
+// ============================================
+// END — ENGINE 6 TEST 6.2 FREE
+// FILE 3
+// ============================================
