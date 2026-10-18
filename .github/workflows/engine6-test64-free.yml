@@ -1,0 +1,80 @@
+
+name: Engine 6 - Universal Gallery Test 6.4 FREE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  universal-gallery-test:
+    name: Engine 6 Universal Gallery - 40 Tests
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify required Engine 6 files
+        run: |
+          test -f engine6/engine6-universal-gallery-test64.json
+          test -f engine6/engine6-universal-grading-test64.js
+          test -f engine6/engine6-universal-test64.js
+          test -f engine6/engine6-gallery-grading-test63.js
+          echo "All required Engine 6 files found."
+
+      - name: Validate universal JSON dataset
+        run: |
+          node -e "const fs=require('fs'); const d=JSON.parse(fs.readFileSync('engine6/engine6-universal-gallery-test64.json','utf8')); if(d.engine!==6 || d.version!=='6.4-free' || !Array.isArray(d.events)) process.exit(1); console.log('Universal JSON dataset valid. Event records:',d.events.length);"
+
+      - name: Run 40 universal grading tests
+        run: |
+          node engine6/engine6-universal-test64.js
+
+      - name: Run universal gallery grading engine
+        env:
+          EVENT: Great Blizzard of 1978
+          STATE: Indiana
+          YEAR: '1978'
+          INPUT: engine6/engine6-universal-gallery-test64.json
+          OUTPUT: engine6-test64-results.json
+        run: |
+          node engine6/engine6-universal-grading-test64.js
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "# Engine 6 - Universal Gallery Test 6.4 FREE"
+            echo ""
+            echo "- Node.js: 22"
+            echo "- Automated tests: 40"
+            echo "- Dataset: engine6-universal-gallery-test64.json"
+            echo "- Sample event: Great Blizzard of 1978"
+            echo "- Sample state: Indiana"
+            echo "- Sample year: 1978"
+            echo ""
+            echo "The automated tests validate matching and grading logic."
+            echo "They do not independently verify real gallery websites."
+          } > engine6-test64-summary.md
+
+          cat engine6-test64-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Engine 6 Test 6.4 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine6-test64-universal-results
+          path: |
+            engine6-test64-results.json
+            engine6-test64-summary.md
+          if-no-files-found: warn
+          retention-days: 30
