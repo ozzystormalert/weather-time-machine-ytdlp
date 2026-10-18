@@ -1,0 +1,36 @@
+
+name: Engine 6 - Photo Gallery Test 6.1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  photo-gallery-test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 6 Test 6.1
+        run: node engine6/engine6-test61.js
+
+      - name: Save Engine 6 sample report
+        run: |
+          node engine6/engine6-photo-gallery.js > engine6-test61-results.json
+
+      - name: Upload Test 6.1 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine6-test61-results
+          path: engine6-test61-results.json
+          if-no-files-found: warn
