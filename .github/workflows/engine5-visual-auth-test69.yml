@@ -1,0 +1,39 @@
+
+name: Engine 5 - Visual Authentication Test 6.9
+
+on:
+  workflow_dispatch:
+
+jobs:
+  visual-authentication:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 5 Visual Authentication Test 6.9
+        env:
+          EVENT: Superstorm Sandy
+          STATE: New Jersey
+          YEAR: '2012'
+          ENGINE5_URL: https://weather-time-machine-engine5.onrender.com
+        run: node engine5/engine5-visual-auth-v69.js
+
+      - name: Upload Test 6.9 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine5-v69-visual-authentication-results
+          path: |
+            engine5-v69-visual-results.json
+            engine5-v69-visual-review.html
+          if-no-files-found: warn
