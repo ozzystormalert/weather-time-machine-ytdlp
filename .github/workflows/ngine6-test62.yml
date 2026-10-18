@@ -1,0 +1,41 @@
+
+name: Engine 6 - Photo Gallery Test 6.2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  photo-gallery-discovery:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Engine 6 Test 6.2
+        run: node engine6/engine6-test62.js
+
+      - name: Run live photo gallery discovery
+        env:
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          EVENT: Tropical Storm Irene
+          STATE: Vermont
+          YEAR: '2011'
+          OUTPUT: engine6-test62-results.json
+        run: node engine6/engine6-discovery-test62.js
+
+      - name: Upload Engine 6 Test 6.2 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine6-test62-results
+          path: engine6-test62-results.json
+          if-no-files-found: warn
