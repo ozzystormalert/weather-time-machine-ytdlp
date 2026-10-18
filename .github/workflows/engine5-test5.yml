@@ -13,18 +13,27 @@ jobs:
       contents: read
 
     steps:
+      # STEP 1 - CHECKOUT REPOSITORY
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # STEP 2 - INSTALL NODE.JS 22
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
+      # STEP 3 - LOCATE TEST 5 JAVASCRIPT
+
       - name: Locate Test 5 JavaScript
         shell: bash
         run: |
-          echo "Locating Engine 5 Test 5 JavaScript..."
+          echo "======================================"
+          echo "WEATHER TIME MACHINE - ENGINE 5"
+          echo "LOCATING TEST 5 JAVASCRIPT"
+          echo "======================================"
 
           if [ -f "engine5/engine5/map-authenticity-test5.js" ]; then
             echo "TEST5_SCRIPT=engine5/engine5/map-authenticity-test5.js" >> "$GITHUB_ENV"
@@ -43,11 +52,13 @@ jobs:
             echo "Found Test 5 JavaScript in nested folder"
 
           else
-            echo "ERROR: Engine 5 Test 5 JavaScript not found."
+            echo "ERROR: Test 5 JavaScript was not found."
             echo "Available Engine 5 files:"
             find engine5 -maxdepth 4 -type f -print
             exit 1
           fi
+
+      # STEP 4 - CHECK JAVASCRIPT SYNTAX
 
       - name: Check JavaScript Syntax
         shell: bash
@@ -56,6 +67,8 @@ jobs:
           node --check "$TEST5_SCRIPT"
           echo "JavaScript syntax check passed."
 
+      # STEP 5 - RUN HISTORICAL MAP VERIFICATION
+
       - name: Run Test 5
         shell: bash
         run: |
@@ -63,15 +76,75 @@ jobs:
           echo "WEATHER TIME MACHINE - ENGINE 5"
           echo "HISTORICAL MAP AUTHENTICITY TEST 5"
           echo "======================================"
-          echo "Running: $TEST5_SCRIPT"
 
-          node "$TEST5_SCRIPT"
+          echo "JavaScript file: $TEST5_SCRIPT"
+
+          node "$TEST5_SCRIPT" \
+            --event "Superstorm Sandy" \
+            --state "New Jersey" \
+            --year "2012" \
+            --image "https://response.restoration.noaa.gov/download/file/fid/1976" \
+            --source "https://response.restoration.noaa.gov/atlantic-erma-and-sandy-response" \
+            --reference "https://www.nhc.noaa.gov/data/tcr/AL182012_Sandy.pdf"
+
+      # STEP 6 - DISPLAY EVIDENCE REPORT
+
+      - name: Display Test 5 Results
+        if: always()
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "ENGINE 5 TEST 5 - EVIDENCE REPORT"
+          echo "======================================"
+
+          if [ -f "engine5-test5-results.json" ]; then
+            cat engine5-test5-results.json
+          else
+            echo "WARNING: Evidence report not generated."
+          fi
+
+          echo ""
+          echo "Evidence files:"
+
+          if [ -d "engine5-test5-evidence" ]; then
+            find engine5-test5-evidence -maxdepth 2 -type f -print
+          else
+            echo "No evidence folder generated."
+          fi
+
+      # STEP 7 - UPLOAD JSON AND ACTUAL EVIDENCE
 
       - name: Upload Test 5 Evidence Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: engine5-test5-evidence-report
-          path: engine5-test5-results.json
+          path: |
+            engine5-test5-results.json
+            engine5-test5-evidence/
           if-no-files-found: warn
           retention-days: 30
+
+      # STEP 8 - FINAL WORKFLOW SUMMARY
+
+      - name: Test 5 Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Engine 5 - Historical Map Authenticity Test 5" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f "engine5-test5-results.json" ]; then
+            echo "Evidence report generated." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Evidence report missing." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -d "engine5-test5-evidence" ]; then
+            echo "Historical evidence files saved." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Historical evidence files unavailable." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Historical authenticity must be verified before A-F grading." >> "$GITHUB_STEP_SUMMARY"
