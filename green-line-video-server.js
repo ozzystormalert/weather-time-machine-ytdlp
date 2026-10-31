@@ -1,179 +1,323 @@
 
-// GREEN LINE 1 — HISTORICAL VIDEO VERIFICATION SERVER
-// Engines 3A and 4A
-// Node.js 22+
-// Store YOUTUBE_API_KEY in Render environment variables.
-// Do not put the API key inside this JavaScript file.
+/*
+ GREEN LINE 1 — NATIONAL LANDMARKS TIME MACHINE
+ TEST #5 — HISTORICAL RELEVANCE SCREENING
 
-const http = require("node:http");
+ COMPLETE REPLACEMENT SERVER
+
+ Engine 3A: Short Historical Videos
+ Engine 4A: Educational Documentaries (20+ minutes)
+
+ Node.js 22+
+ No npm packages required.
+
+ Required Render environment variable:
+ YOUTUBE_API_KEY
+
+ Render start command:
+ node green-line-video-server.js
+
+ IMPORTANT:
+ Search results are not independently authenticated
+ historical resources. Incomplete searches cannot
+ receive a verified zero grade.
+*/
+
+const http = require('node:http');
 
 const PORT = Number(process.env.PORT || 3000);
-const KEY = process.env.YOUTUBE_API_KEY || "";
+const KEY = process.env.YOUTUBE_API_KEY || '';
 
 const MAX_PER_IP = 24;
-const requests = new Map();
+const requestHistory = new Map();
+
+const VERSION = 'test5-identity-and-context-v1';
+
+// Approved aliases for known historical landmarks.
+// More aliases can be added after verification.
+const ALIAS_LIBRARY = {
+  'conference house': [
+    'billopp house',
+    'billop house',
+    'billop manor',
+    'billopp manor',
+    'staten island peace conference',
+    '1776 peace conference'
+  ]
+};
+
+const HISTORICAL_TERMS =
+  /\b(history|historical|historic|heritage|revolution|revolutionary|colonial|century|1776|museum|archives?|historian|preservation|restoration|founding|architecture|architectural|landmark|built|established|battle|war|peace conference|reenactment|re-enactment)\b/i;
+
+const DOCUMENTARY_TERMS =
+  /\b(documentary|documentaries|educational|historical|history|historian|lecture|museum|archives?|heritage|guided tour|walking tour|historic tour|preservation|revolutionary war|architecture|re-enactment|reenactment)\b/i;
+
+// -------------------------------------------
+// NORMALIZE TEXT
+// -------------------------------------------
+
+function normalized(s) {
+  return String(s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Require full word/phrase boundaries.
+function containsPhrase(text, phrase) {
+  const t = ' ' + normalized(text) + ' ';
+  const p = normalized(phrase);
+
+  return Boolean(p) && t.includes(' ' + p + ' ');
+}
+
+function abbreviate(s, n = 1000) {
+  return String(s || '').slice(0, n);
+}
+
+// -------------------------------------------
+// BLOGGER CORS
+// -------------------------------------------
 
 function allowedOrigin(origin) {
-  if (!origin) return "*";
+  if (!origin) return '*';
 
   try {
-    const u = new URL(origin);
+    const url = new URL(origin);
 
-    return u.protocol === "https:" &&
-      (
-        u.hostname === "1-newupdates.blogspot.com" ||
-        u.hostname === "localhost"
-      )
-      ? origin
-      : "";
-  } catch {
-    return "";
-  }
-}
-
-function response(res, code, data, origin) {
-  res.writeHead(code, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": allowedOrigin(origin) || "null",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-    "Cache-Control": "no-store"
-  });
-
-  res.end(JSON.stringify(data));
-}
-
-// Convert YouTube ISO 8601 duration to seconds.
-function seconds(iso) {
-  const m =
-    /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/
-      .exec(iso || "");
-
-  if (!m) return null;
-
-  return (
-    Number(m[1] || 0) * 86400 +
-    Number(m[2] || 0) * 3600 +
-    Number(m[3] || 0) * 60 +
-    Number(m[4] || 0)
-  );
-}
-
-// Request YouTube Data API metadata.
-async function youtube(endpoint, params) {
-  const u = new URL(
-    "https://www.googleapis.com/youtube/v3/" + endpoint
-  );
-
-  for (const [k, v] of Object.entries(params)) {
-    u.searchParams.set(k, String(v));
-  }
-
-  u.searchParams.set("key", KEY);
-
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 16000);
-
-  try {
-    const r = await fetch(u, {
-      signal: ctl.signal
-    });
-
-    const j = await r.json();
-
-    if (!r.ok) {
-      throw Object.assign(
-        new Error(
-          j.error?.message || "YouTube API error"
-        ),
-        { code: r.status }
-      );
+    if (
+      url.protocol === 'https:' &&
+      url.hostname === '1-newupdates.blogspot.com'
+    ) {
+      return origin;
     }
 
-    return j;
-  } finally {
-    clearTimeout(timer);
+    return '';
+  } catch {
+    return '';
   }
 }
 
-// Check historical-site relevance.
-function relevant(video, name, state) {
-  const raw =
-    (video.title + " " + video.description).toLowerCase();
+function send(res, code, data, origin = '') {
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin':
+      allowedOrigin(origin) || 'null',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Vary': 'Origin',
+    'Cache-Control': 'no-store'
+  });
 
-  const terms = name.toLowerCase()
-    .match(/[a-z0-9]+/g)
-    ?.filter(
-      t =>
-        t.length >= 4 &&
-        ![
-          "national",
-          "historic",
-          "historical",
-          "memorial",
-          "monument",
-          "house",
-          "park",
-          "site"
-        ].includes(t)
-    ) || [];
+  res.end(code === 204 ? '' : JSON.stringify(data));
+}
 
-  const n = terms.filter(t => raw.includes(t)).length;
+// -------------------------------------------
+// YOUTUBE DURATION PARSER
+// -------------------------------------------
 
-  const st = state.toLowerCase()
-    .split(/\s+/)
-    .filter(t => t.length >= 4);
+function durationSeconds(iso) {
+  const match =
+    /^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/
+      .exec(iso || '');
+
+  if (!match) return null;
+
+  return (
+    Number(match[1] || 0) * 86400 +
+    Number(match[2] || 0) * 3600 +
+    Number(match[3] || 0) * 60 +
+    Number(match[4] || 0)
+  );
+}
+
+// -------------------------------------------
+// TEST #5 — HISTORICAL RELEVANCE
+// -------------------------------------------
+
+function historicalRelevance(video, site, state) {
+  const title = String(video.title || '');
+  const description = String(video.description || '');
+  const text = title + ' ' + description;
+
+  const canon = normalized(site);
+  const aliases = ALIAS_LIBRARY[canon] || [];
+
+  const acceptedNames = [site, ...aliases];
+
+  // Require an actual landmark name or
+  // approved historical alias.
+  const matchedIdentity =
+    acceptedNames.find(alias =>
+      containsPhrase(text, alias)
+    ) || '';
+
+  const titleIdentity = acceptedNames.some(alias =>
+    containsPhrase(title, alias)
+  );
+
+  const stateMentioned =
+    containsPhrase(text, state);
+
+  // Specific context for Conference House.
+  const localContext =
+    /\b(staten island|tottenville|billopp?|richmond county|new york)\b/i
+      .test(text);
+
+  const periodContext =
+    /\b(1776|american revolution|revolutionary war|howe|benjamin franklin|john adams|edward rutledge|colonial|peace conference)\b/i
+      .test(text);
+
+  const historicalContext =
+    HISTORICAL_TERMS.test(text);
+
+  const identity = Boolean(matchedIdentity);
+
+  // Broad historical event aliases require
+  // matching geographic context.
+  const aliasNeedsGeography =
+    canon === 'conference house' &&
+    /^(1776 peace conference|staten island peace conference)$/i
+      .test(matchedIdentity);
+
+  const geography =
+    !aliasNeedsGeography || localContext;
+
+  // Final relevance decision:
+  // identity + required geographic context
+  // + historical subject matter.
+  const match =
+    identity &&
+    geography &&
+    historicalContext;
+
+  const reasons = [];
+
+  if (!identity) {
+    reasons.push(
+      'No full site name or approved historical alias'
+    );
+  }
+
+  if (!geography) {
+    reasons.push(
+      'Historical alias lacks matching location context'
+    );
+  }
+
+  if (!historicalContext) {
+    reasons.push(
+      'Historical subject context not established'
+    );
+  }
 
   return {
-    match: n >= Math.min(2, terms.length) && n > 0,
-    matched: n,
-    total: terms.length,
-    stateMentioned: st.some(t => raw.includes(t))
+    match,
+    identityMatched: identity,
+    matchedIdentity,
+    titleIdentity,
+    stateMentioned,
+    historicalContext,
+    localContext,
+    periodContext,
+    reasons
   };
 }
 
-// Run independent Engine 3A or 4A audit.
-async function audit(query) {
-  const kind = query.engine === "4" ? "4" : "3";
+// -------------------------------------------
+// YOUTUBE DATA API V3
+// -------------------------------------------
 
-  const name = (query.site || "").trim();
-  const state = (query.state || "").trim();
+async function youtube(endpoint, params) {
+  const url = new URL(
+    'https://www.googleapis.com/youtube/v3/' +
+    endpoint
+  );
+
+  for (const [key, val] of Object.entries(params)) {
+    url.searchParams.set(key, String(val));
+  }
+
+  // API key remains on the Render server.
+  url.searchParams.set('key', KEY);
+
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    20000
+  );
+
+  try {
+    const resp = await fetch(url, {
+      signal: controller.signal
+    });
+
+    const json = await resp.json();
+
+    if (!resp.ok) {
+      const err = new Error(
+        json?.error?.message ||
+        'YouTube API request failed'
+      );
+
+      err.status = resp.status;
+      throw err;
+    }
+
+    return json;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// -------------------------------------------
+// ENGINES 3A AND 4A
+// -------------------------------------------
+
+async function audit({site, state, engine}) {
+  site = String(site || '').trim();
+  state = String(state || '').trim();
+
+  engine = String(engine) === '4' ? 4 : 3;
 
   if (
-    name.length < 3 ||
-    name.length > 180 ||
+    site.length < 3 ||
+    site.length > 180 ||
     state.length < 2 ||
     state.length > 80
   ) {
-    throw Object.assign(
-      new Error(
-        "A historical site name and state are required."
-      ),
-      { code: 400 }
+    const e = new Error(
+      'Historical site name and state are required'
     );
+
+    e.status = 400;
+    throw e;
   }
 
   if (!KEY) {
-    throw Object.assign(
-      new Error(
-        "YOUTUBE_API_KEY is not configured on the Render server."
-      ),
-      { code: 503 }
+    const e = new Error(
+      'YOUTUBE_API_KEY not configured'
     );
+
+    e.status = 503;
+    throw e;
   }
 
-  const term = kind === "4"
-    ? " history documentary"
-    : " history historic";
+  // Independent searches for each engine.
+  const term = engine === 4
+    ? ' history documentary'
+    : ' history historic';
 
-  // Discover candidate videos.
-  const search = await youtube("search", {
-    part: "snippet",
-    q: name + " " + state + term,
-    type: "video",
+  const search = await youtube('search', {
+    part: 'snippet',
+    q: site + ' ' + state + term,
+    type: 'video',
     maxResults: 25,
-    safeSearch: "moderate"
+    safeSearch: 'moderate'
   });
 
   const ids = [
@@ -184,207 +328,398 @@ async function audit(query) {
     )
   ];
 
-  if (!ids.length) {
-    return {
-      ok: true,
-      complete: false,
-      reason:
-        "No results returned in limited YouTube search",
-      videos: [],
-      engine: Number(kind)
-    };
-  }
+  const details = ids.length
+    ? await youtube('videos', {
+        part: 'snippet,contentDetails,status',
+        id: ids.join(',')
+      })
+    : {items: []};
 
-  // Obtain actual reported video durations.
-  const detail = await youtube("videos", {
-    part: "snippet,contentDetails,status",
-    id: ids.join(",")
-  });
+  const videos = (details.items || []).map(v => {
+    const title =
+      v.snippet?.title || '';
 
-  const videos = (detail.items || []).map(x => {
-    const dur = seconds(x.contentDetails?.duration);
+    const description =
+      v.snippet?.description || '';
 
-    const title = x.snippet?.title || "";
-    const description = x.snippet?.description || "";
+    const duration =
+      durationSeconds(
+        v.contentDetails?.duration
+      );
 
-    const r = relevant(
-      { title, description },
-      name,
+    const relevance = historicalRelevance(
+      {title, description},
+      site,
       state
     );
 
-    const status =
-      x.status?.privacyStatus || "unknown";
-
-    // Engine 3A: short videos below 20 minutes.
-    // Engine 4A: documentaries 20 minutes or longer.
-    const qualifyingDuration =
-      dur !== null &&
-      (
-        kind === "4"
-          ? dur >= 1200
-          : dur > 0 && dur < 1200
-      );
-
+    // Engine 3A accepts the provisional
+    // short-video runtime range.
+    //
+    // Engine 4A requires 20+ minutes
+    // and documentary/educational metadata.
     const educational =
-      kind === "3" ||
-      /\b(documentary|historical|history|museum|heritage|educational|historian|archives?|lecture)\b/i
-        .test(title + " " + description);
+      engine === 3 ||
+      DOCUMENTARY_TERMS.test(
+        title + ' ' + description
+      );
 
     const checks = {
       identity: Boolean(
-        x.id &&
-        x.snippet?.channelTitle &&
-        x.snippet?.publishedAt
+        v.id &&
+        v.snippet?.channelTitle &&
+        v.snippet?.publishedAt
       ),
-      public: status === "public",
-      duration: qualifyingDuration,
-      relevance: r.match,
+
+      public:
+        v.status?.privacyStatus === 'public',
+
+      duration:
+        duration !== null &&
+        (
+          engine === 4
+            ? duration >= 1200
+            : duration > 0 && duration < 1200
+        ),
+
+      relevance: relevance.match,
+
       educational
     };
 
+    const rejectionReasons =
+      Object.entries(checks)
+        .filter(([,ok]) => !ok)
+        .map(([k]) => ({
+          identity:
+            'Missing video identity/channel/publication metadata',
+
+          public:
+            'Video not public',
+
+          duration:
+            engine === 4
+              ? 'Not at least 20 minutes'
+              : 'Not shorter than 20 minutes',
+
+          relevance:
+            relevance.reasons.join('; ') ||
+            'Site identity/relevance failed',
+
+          educational:
+            'No educational or documentary metadata'
+        }[k]));
+
     return {
-      id: x.id,
-      url: "https://www.youtube.com/watch?v=" + x.id,
+      id: v.id,
+
+      url:
+        'https://www.youtube.com/watch?v=' +
+        v.id,
+
       title,
-      description,
-      channel: x.snippet?.channelTitle || "",
-      published: x.snippet?.publishedAt || "",
-      privacy: status,
-      durationISO: x.contentDetails?.duration || "",
-      durationSeconds: dur,
-      relevance: r,
+
+      description: abbreviate(description),
+
+      channel:
+        v.snippet?.channelTitle || '',
+
+      published:
+        v.snippet?.publishedAt || '',
+
+      privacy:
+        v.status?.privacyStatus || '',
+
+      durationISO:
+        v.contentDetails?.duration || '',
+
+      durationSeconds: duration,
+
+      relevance,
+
       checks,
-      qualified: Object.values(checks).every(Boolean)
+
+      qualified:
+        rejectionReasons.length === 0,
+
+      rejectionReasons
     };
   });
 
   return {
     ok: true,
-    engine: Number(kind),
-    site: name,
+    engine,
+    site,
     state,
+
+    // Search is sampled, not exhaustive.
     complete: false,
+
     reason:
-      "Sampled at most 25 search candidates. " +
-      "This cannot prove that no qualifying videos exist.",
+      'Limited 25-result discovery; no zero score or exhaustive claim permitted.',
+
     videos,
+
     qualifiedCount:
-      videos.filter(v => v.qualified).length,
+      videos.filter(x => x.qualified).length,
+
     checkedCount: videos.length,
+
     verifiedScope:
-      "YouTube metadata eligibility only, " +
-      "not historical authenticity"
+      'YouTube metadata eligibility and site-identity screening, not historical authenticity',
+
+    ruleVersion: VERSION
   };
 }
 
-// HTTP server for Render.
-http.createServer(async (req, res) => {
-  const origin = req.headers.origin || "";
+// -------------------------------------------
+// LOCAL TEST #5 RELEVANCE CASES
+// -------------------------------------------
 
-  if (req.method === "OPTIONS") {
-    return response(res, 204, {}, origin);
-  }
+function fixtures() {
+  const cases = [
+    [
+      'Conference House tour with Revolutionary War story',
+      'Conference House, Staten Island, 1776 peace conference',
+      true
+    ],
+    [
+      'FDR Life and Presidential Legacy',
+      'The 1945 Yalta conference changed history',
+      false
+    ],
+    [
+      'AN DAS DEUTSCHE VOLK',
+      'Hague conference of 1907 and German history',
+      false
+    ],
+    [
+      'Visit Staten Island park',
+      'Walking trails and wildlife only',
+      false
+    ],
+    [
+      'Billopp House historical tour',
+      'Staten Island American Revolution museum',
+      true
+    ],
+    [
+      '1776 Peace Conference documentary',
+      'Staten Island history of the Billopp House',
+      true
+    ],
+    [
+      'A Tour of Conference House',
+      'Open House TV shows the historical site',
+      true
+    ],
+    [
+      'Annual conference of history teachers',
+      'Discussion of school history',
+      false
+    ]
+  ];
 
-  let u;
+  return cases.map(
+    ([title, description, expected]) => ({
+      title,
+      expected,
 
-  try {
-    u = new URL(req.url, "http://localhost");
-  } catch {
-    return response(
-      res,
-      400,
-      { ok: false, error: "Invalid URL" },
-      origin
-    );
-  }
+      actual: historicalRelevance(
+        {title, description},
+        'Conference House',
+        'New York'
+      ).match
+    })
+  );
+}
 
-  // Health endpoint.
-  if (u.pathname === "/health") {
-    return response(
-      res,
-      200,
-      {
-        ok: true,
-        service: "green-line-landmark-video",
-        hasKey: Boolean(KEY)
-      },
-      origin
-    );
-  }
+// -------------------------------------------
+// SERVER STARTUP
+// -------------------------------------------
 
-  // Historical landmark video audit endpoint.
-  if (
-    u.pathname !== "/audit-video" ||
-    req.method !== "GET"
-  ) {
-    return response(
-      res,
-      404,
-      { ok: false, error: "Not found" },
-      origin
-    );
-  }
+if (require.main === module) {
+  // Run local tests using:
+  // node green-line-video-server.js --self-test
 
-  if (origin && !allowedOrigin(origin)) {
-    return response(
-      res,
-      403,
-      {
-        ok: false,
-        error: "Browser origin not allowed"
-      },
-      origin
-    );
-  }
+  if (process.argv.includes('--self-test')) {
+    const checks = fixtures();
 
-  // Basic request rate limiting.
-  const ip = req.socket.remoteAddress || "unknown";
-  const now = Date.now();
-
-  const recent = (requests.get(ip) || [])
-    .filter(t => now - t < 60000);
-
-  if (recent.length >= MAX_PER_IP) {
-    return response(
-      res,
-      429,
-      {
-        ok: false,
-        error: "Rate limit exceeded"
-      },
-      origin
-    );
-  }
-
-  recent.push(now);
-  requests.set(ip, recent);
-
-  try {
-    const data = await audit({
-      site: u.searchParams.get("site") || "",
-      state: u.searchParams.get("state") || "",
-      engine: u.searchParams.get("engine") || "3"
+    checks.forEach(t => {
+      console.log(
+        `${t.actual === t.expected ? 'PASS' : 'FAIL'} | ${t.title}`
+      );
     });
 
-    response(res, 200, data, origin);
+    if (
+      checks.some(t => t.actual !== t.expected)
+    ) {
+      process.exitCode = 1;
+    }
 
-  } catch (e) {
-    response(
-      res,
-      e.code >= 400 && e.code < 600
-        ? e.code
-        : 502,
-      {
-        ok: false,
-        error: String(e.message || e)
-      },
-      origin
+  } else {
+
+    http.createServer(async (req, res) => {
+      const origin =
+        req.headers.origin || '';
+
+      if (req.method === 'OPTIONS') {
+        return send(res, 204, {}, origin);
+      }
+
+      let url;
+
+      try {
+        url = new URL(
+          req.url,
+          'http://localhost'
+        );
+      } catch {
+        return send(
+          res,
+          400,
+          {
+            ok: false,
+            error: 'Invalid URL'
+          },
+          origin
+        );
+      }
+
+      // -----------------------------------
+      // HEALTH ENDPOINT
+      // -----------------------------------
+
+      if (url.pathname === '/health') {
+        return send(
+          res,
+          200,
+          {
+            ok: true,
+            service:
+              'green-line-landmark-video',
+            hasKey: Boolean(KEY),
+            relevanceVersion: VERSION
+          },
+          origin
+        );
+      }
+
+      // -----------------------------------
+      // AUDIT ENDPOINT
+      // -----------------------------------
+
+      if (
+        url.pathname !== '/audit-video' ||
+        req.method !== 'GET'
+      ) {
+        return send(
+          res,
+          404,
+          {
+            ok: false,
+            error: 'Not found'
+          },
+          origin
+        );
+      }
+
+      if (
+        origin &&
+        !allowedOrigin(origin)
+      ) {
+        return send(
+          res,
+          403,
+          {
+            ok: false,
+            error: 'Origin not allowed'
+          },
+          origin
+        );
+      }
+
+      // Simple rate limiter.
+      const ip =
+        req.socket.remoteAddress ||
+        'unknown';
+
+      const now = Date.now();
+
+      const times =
+        (requestHistory.get(ip) || [])
+          .filter(t => now - t < 60000);
+
+      if (
+        times.length >= MAX_PER_IP
+      ) {
+        return send(
+          res,
+          429,
+          {
+            ok: false,
+            error: 'Rate limit exceeded'
+          },
+          origin
+        );
+      }
+
+      times.push(now);
+
+      requestHistory.set(ip, times);
+
+      try {
+        const result = await audit({
+          site:
+            url.searchParams.get('site'),
+
+          state:
+            url.searchParams.get('state'),
+
+          engine:
+            url.searchParams.get('engine')
+        });
+
+        return send(
+          res,
+          200,
+          result,
+          origin
+        );
+
+      } catch (e) {
+
+        const status =
+          e.status >= 400 &&
+          e.status < 600
+            ? e.status
+            : 502;
+
+        return send(
+          res,
+          status,
+          {
+            ok: false,
+            error: String(
+              e.message || e
+            )
+          },
+          origin
+        );
+      }
+
+    }).listen(
+      PORT,
+      () => console.log(
+        'Green Line video service listening on ' +
+        PORT
+      )
     );
   }
+}
 
-}).listen(PORT, () => {
-  console.log(
-    "Green Line video service listening on " + PORT
-  );
-});
+module.exports = {
+  historicalRelevance,
+  durationSeconds,
+  fixtures
+};
